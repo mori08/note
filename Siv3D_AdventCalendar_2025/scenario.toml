@@ -1,0 +1,12 @@
+[[init]]
+    [[init.make]]
+        name = "player"
+        pos = {x=100, y=100, z=0}
+        image = {path="siv3Dkun.png", size={x=80,y=80}, pos={x=0, y=0}}
+    [[init.make]]
+        name = "text"
+        pos = {x=100, y=140, z=1}
+        text = {text="テスト", font={size=20}}
+[[init]]
+    push = "test"
+    param = 240
