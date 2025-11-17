@@ -4,7 +4,7 @@
 ゲームのストーリーはコードに書きたくない。
 できるだけ設定ファイルに書いて、それを読みながら動いてほしい。
 
-下のTOMLは簡単なイベントについて書いたもの。
+下のTOMLは簡単なストーリ上のイベントについて書いたもの。
 C++で「イベント(`event`)」だと他の概念と衝突しやすそうなので、以降は「シナリオ(`scenario`)」と呼ぶ
 
 ```toml
@@ -85,7 +85,7 @@ struct EntitySet
 ```
 
 <details>
-<summary> 画像とテキストを試しに表示してみる。 </summary>
+<summary> 画像とテキストを表示してみる。 </summary>
 
 Entityを1つ描画する関数を用意
 ```cpp
@@ -176,101 +176,109 @@ void Main()
 ## （２）ゲームの状態をスタックで持つ
 やりたいことを整理する。
 
-* まずゲームの状態を管理、遷移させながらゲームを進行させる
-  * Stateパターンを使う
+* ゲームの状態を管理、遷移させながらゲームを進行させる
+  * -> **Stateパターンを使う**
 * 設定ファイルを読んでイベントを進行させる `State` がほしい
-  * `ScenarioState` を作る
-* 別の状態に遷移した後 `ScenarioState` に戻って続きから進行させたい
-  * `State` をスタックで管理すれば、popすれば一つ前の状態に戻れる
+  * -> **`ScenarioState` を作る**
+  * scenario.tomlというファイルを読みながら他の `State` を呼びだす
+* 別の状態に遷移した後も `ScenarioState` に戻って続きを進めたい
+  * -> **`State` をスタックで管理する**
+  * popで一つ前に簡単に戻れる
   * スタック内の `State` の進行状況は保持されたまま
   * `ScenarioState` 以外の箇所でもスタックの方が都合がいいことが多い
 
-まずは `State` をスタックで扱う準備をする。
+---
+
+まずは `State` 抽象クラスを作る。
+Entityを操作できる関数を用意して、`update` の戻り値はスタック操作 `Action` を返す。
 
 ```cpp
-class State;
-
-// Stack操作について（State::update()の戻り値にする）
-struct StackOp
-{
-	enum class Type
-	{
-		NONE,
-		POP,
-		PUSH,
-		REPLACE, // clear + push
-	};
-
-	Type type;
-	std::unique_ptr<State> nextState;
-
-	static StackOp None() { return { Type::NONE, nullptr }; }
-	static StackOp Pop() { return{ Type::POP, nullptr }; }
-	static StackOp Push(std::unique_ptr<State>&& nextState) { return { Type::PUSH, std::move(nextState) }; }
-	static StackOp Replace(std::unique_ptr<State>&& nextState) { return { Type::REPLACE, std::move(nextState) }; }
-};
-
-// 状態の基底クラス
 class State
 {
 public:
+	struct Action
+	{
+		enum class Type
+		{
+			NONE,
+			POP,
+			PUSH,
+			REPLACE, // clear + push
+		};
+
+		Type type;
+		std::unique_ptr<State> nextState;
+
+		static Action None() { return { Type::NONE, nullptr }; }
+		static Action Pop() { return{ Type::POP, nullptr }; }
+		static Action Push(std::unique_ptr<State>&& state) { return{ Type::PUSH, std::move(state) }; }
+		static Action Replace(std::unique_ptr<State>&& state) { return{ Type::REPLACE, std::move(state) }; }
+	};
+
 	virtual ~State() = default;
 
 	virtual void onAfterPush(EntitySet& entitys) = 0;
-	virtual StackOp update(EntitySet& entitys) = 0;
+	virtual Action update(EntitySet& entitys) = 0;
 	virtual void onBeforePop(EntitySet& entitys) = 0;
 };
+```
 
-// Stateの管理
+次に `State` をスタック形式で管理する `StateStack` クラスを作る。
+
+```cpp
 class StateStack
 {
 public:
-	StateStack(EntitySet& entitys);
-	void update(EntitySet& entitys);
+	StateStack();
+	void update(EntitySet& entities);
 
 private:
-	void pop(EntitySet& entitys);
+	void pop(EntitySet& entities);
 	void push(EntitySet& entitys, std::unique_ptr<State>&& nextState);
 
 	// top以外のデータも見たいのでArrayで実装
 	// 末尾以外のデータを編集しないように気を付ける
 	Array<std::unique_ptr<State>> m_stack;
 };
+```
 
-StateStack::StateStack(EntitySet& entitys)
+```cpp
+StateStack::StateStack()
 {
 	// TODO: 初期Stateをpush
+	// m_stack.push_back(std::make_unique<ScenarioState>(U"init"));
 }
 
-void StateStack::update(EntitySet& entitys)
+void StateStack::update(EntitySet& entities)
 {
 	if (m_stack.empty()) { return; }
 
-	auto [type, nextState] = m_stack.back()->update(entitys);
+	// Stateの更新して、スタック操作を取得
+	auto [type, nextState] = m_stack.back()->update(entities);
 
 	switch (type)
 	{
-	case StackOp::Type::NONE:
+	case State::Action::Type::NONE:
 		break;
 
-	case StackOp::Type::POP:
-		pop(entitys);
+	case State::Action::Type::POP:
+		pop(entities);
 		break;
 
-	case StackOp::Type::PUSH:
-		push(entitys, std::move(nextState));
+	case State::Action::Type::PUSH:
+		push(entities, std::move(nextState));
 		break;
 
-	case StackOp::Type::REPLACE:
-		while (not m_stack.empty()) { pop(entitys); }
-		push(entitys, std::move(nextState));
+	case State::Action::Type::REPLACE:
+		while (not m_stack.empty()) { pop(entities); }
+		push(entities, std::move(nextState));
 		break;
 	}
 }
 
-void StateStack::pop(EntitySet& entitys)
+void StateStack::pop(EntitySet& entities)
 {
-	m_stack.back()->onBeforePop(entitys);
+	m_stack.back()->onBeforePop(entities);
 	m_stack.pop_back();
 }
 
@@ -281,66 +289,55 @@ void StateStack::push(EntitySet& entitys, std::unique_ptr<State>&& nextState)
 }
 ```
 
-```cpp
-// GameクラスにStateStackを追加
-class Game
-{
-public:
-	Game();
-	void update();
-	void draw() const;
-
-private:
-	EntitySet m_entitys;
-	StateStack m_states; // 追加
-};
-
-void Game::update()
-{
-	m_states.update(m_entitys);
-}
-```
-
-次に設定ファイル(scenario.toml)を読む `ScenarioState` を作って以下の機能を持たせる。
+設定ファイル(scenario.toml)を読む `ScenarioState` を作って以下の機能を持たせる。
 
 * Entityを作ることができる
-	* pop時に作成したEntityを削除する
+	* pop時には作成したEntityを削除する
 * scenario.tomlを読み込む
 	* 指定した `TableArray` を順に読む
 	* `make` でEntity作成
 	* `push=` `replace=` で他 `State` を作る
 
 ```cpp
-// scenario.tomlを読み込んで他Stateをpush
 class ScenarioState : public State
 {
 public:
-	using MakeStateFunc = std::function<std::unique_ptr<State>(const TOMLValue&)>;
+	using MakeStateFunc
+		= std::function<std::unique_ptr<State>(const TOMLValue&)>;
 
 	ScenarioState(const String& scenarioName);
 	ScenarioState(const TOMLValue& param);
 
 	void onAfterPush(EntitySet& entities) override;
-	StackOp update(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
 	void onBeforePop(EntitySet& entities) override;
 
 private:
 	void makeEntities(EntitySet& entities, const TOMLValue& params);
-	template<typename Type> static MakeStateFunc getMakeStateFunc();
+
+	template<typename Type>
+	MakeStateFunc makeStateFunc()
+	{
+		return [](const TOMLValue& param) {
+			return std::make_unique<Type>(param);
+		};
+	}
 
 	// シナリオ管理
 	TOMLTableArrayIterator m_now;
 	TOMLTableArrayIterator m_end;
 
-	// ここで作ったEntityの名前
+	// ここで作ったEntityの名前（pop時に削除する用）
 	HashSet<String> m_nameSetMadeOnThis;
 };
+```
 
+```cpp
 ScenarioState::ScenarioState(const String& scenarioName)
 {
 	static const TOMLReader reader{ U"scenario.toml" };
-	m_now = toml()[scenarioName].tableArrayView().begin();
-	m_end = toml()[scenarioName].tableArrayView().end();
+	m_now = reader[scenarioName].tableArrayView().begin();
+	m_end = reader[scenarioName].tableArrayView().end();
 }
 
 ScenarioState::ScenarioState(const TOMLValue& param)
@@ -352,39 +349,41 @@ void ScenarioState::onAfterPush(EntitySet&)
 {
 }
 
-StackOp ScenarioState::update(EntitySet& entities)
+State::Action ScenarioState::update(EntitySet& entities)
 {
 	// 最後まで読んだら pop
-	if (m_now == m_end)
-	{
-		return StackOp::Pop();
-	}
+	if (m_now == m_end) { return Action::Pop(); }
 
-	// 文字列 -> 次のStateを作る関数へ変換
 	static const HashTable<String, MakeStateFunc> MAKE_TABLE = {
-		// ここにpushしたいStateを追加
-		// 例: { U"hoge", MakeStateFunc<HogeState>() },
+		{ U"scenario", makeStateFunc<ScenarioState>() },
+		// TODO: 他のStateもここに登録
 	};
 
 	TOMLValue nowToml = *m_now;
 	++m_now;
+
 	if (nowToml[U"make"].isTableArray())
 	{
+		// Entity作成
 		makeEntities(entities, nowToml[U"make"]);
-		return StackOp::None();
-	}
-	if (nowToml[U"push"].isString())
-	{
-		const String stateName = nowToml[U"push"].getString();
-		return StackOp::Push(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
-	}
-	if (nowToml[U"replace"].isString())
-	{
-		const String stateName = nowToml[U"replace"].getString();
-		return StackOp::Replace(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
+		return Action::None();
 	}
 
-	return StackOp::None();
+	if (nowToml[U"push"].isString())
+	{
+		// push
+		const String stateName = nowToml[U"push"].getString();
+		return Action::Push(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
+	}
+
+	if (nowToml[U"replace"].isString())
+	{
+		// replace
+		const String stateName = nowToml[U"replace"].getString();
+		return Action::Replace(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
+	}
+
+	return Action::None();
 }
 
 void ScenarioState::onBeforePop(EntitySet& entities)
@@ -442,24 +441,73 @@ void ScenarioState::makeEntities(EntitySet& entities, const TOMLValue& params)
 		}
 	}
 }
-
-template<typename Type>
-ScenarioState::MakeStateFunc ScenarioState::getMakeStateFunc()
-{
-	return [](const TOMLValue& param) {return std::make_unique<Type>(param); };
-}
 ```
 
-`StateStack` の初期状態は init で登録する。
+<details>
+<summary> scenario.tomlを読み込んで、Entityを作るところまでやってみる </summary>
+
+Main関数にStackSetを追加
 
 ```cpp
-StateStack::StateStack(EntitySet& entities)
+void Main()
 {
-	push(entities, std::make_unique<ScenarioState>(U"init"));
+	Window::Resize(Size{ 640, 480 });
+	Scene::SetBackground(Color(0xf0));
+
+	EntitySet entities;
+	StateStack stateStack; // 追加
+
+	while (System::Update())
+	{
+		stateStack.update(entities); // 追加
+		drawEntities(entities);
+	}
 }
 ```
 
-他のState系クラスも作る
+StateStackの初期Stateを設定して、`[[init]]` を読ませる。
+
+```cpp
+StateStack::StateStack()
+{
+	m_stack.push_back(std::make_unique<ScenarioState>(U"init"));
+}
+```
+
+一瞬でpopされないように、ちょっと書き換える
+
+```cpp
+State::Action ScenarioState::update(EntitySet& entities)
+{
+	// 最後まで読んだら pop
+	// if (m_now == m_end) { return Action::Pop(); } // <-- 一時的にコメントアウト
+	if (m_now == m_end) { return Action::None(); } // <-- 最後まで読んだらストップ 
+
+	// 略
+}
+```
+
+scenario.tomlを準備
+
+```toml
+[[init]]
+    [[init.make]]
+        name = "player"
+        pos = {x=100, y=100, z=0}
+        image = {path="siv3Dkun.png", size={x=80,y=80}, pos={x=0, y=0}}
+    [[init.make]]
+        name = "text"
+        pos = {x=100, y=140, z=1}
+        text = {text="テスト", font={size=20}}
+```
+
+同じように画像とテキストを表示できる
+![Image1](image1.png)
+
+</details>
+
+
+他のStateも作る
 
 <details>
 <summary> WaitState（指定した秒数待つ） </summary>
@@ -477,7 +525,7 @@ public:
 	WaitState(const TOMLValue& param);
 
 	void onAfterPush(EntitySet& entities) override;
-	StackOp update(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
 	void onBeforePop(EntitySet& entities) override;
 
 private:
@@ -486,7 +534,7 @@ private:
 ```
 
 ```cpp
-WaitState::WaitState(const TOMLValue& toml)
+WaitState::WaitState(const TOMLValue& param)
 	: m_time{ param.get<double>() }
 {
 }
@@ -495,10 +543,10 @@ void WaitState::onAfterPush(EntitySet&)
 {
 }
 
-StackOp WaitState::update(EntitySet&)
+State::Action WaitState::update(EntitySet&)
 {
 	m_time -= Scene::DeltaTime();
-	return m_time < 0 ? StackOp::Pop() : StackOp::None();
+	return m_time < 0 ? Action::Pop() : Action::None();
 }
 
 void WaitState::onBeforePop(EntitySet&)

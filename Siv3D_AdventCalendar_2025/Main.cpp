@@ -1,7 +1,8 @@
 #include <Siv3D.hpp>
 
+
 /*
-* Entity + Component
+* Entity Component
 */
 
 // 座標
@@ -29,7 +30,7 @@ struct TextComponent
 // EntityとComponentの管理
 struct EntitySet
 {
-	// Entityの名前セット
+	// Entity名のセット
 	HashSet<String> nameSet;
 
 	// 名前 -> Component
@@ -37,6 +38,7 @@ struct EntitySet
 	HashTable<String, ImageComponent> imageTable;
 	HashTable<String, TextComponent> textTable;
 
+	// Entityの削除
 	void erase(const String& name)
 	{
 		nameSet.erase(name);
@@ -46,78 +48,111 @@ struct EntitySet
 	}
 };
 
+
 /*
-* State と Stack
+* State
 */
 
-class State;
-
-// Stack操作について（State::update()の戻り値にする）
-struct StackOp
-{
-	enum class Type
-	{
-		NONE,
-		POP,
-		PUSH,
-		REPLACE, // clear + push
-	};
-
-	Type type;
-	std::unique_ptr<State> nextState;
-
-	static StackOp None() { return { Type::NONE, nullptr }; }
-	static StackOp Pop() { return{ Type::POP, nullptr }; }
-	static StackOp Push(std::unique_ptr<State>&& nextState) { return { Type::PUSH, std::move(nextState) }; }
-	static StackOp Replace(std::unique_ptr<State>&& nextState) { return { Type::REPLACE, std::move(nextState) }; }
-};
-
-// 状態の基底クラス
 class State
 {
 public:
+	struct Action
+	{
+		enum class Type
+		{
+			NONE,
+			POP,
+			PUSH,
+			REPLACE, // clear + push
+		};
+
+		Type type;
+		std::unique_ptr<State> nextState;
+
+		static Action None() { return { Type::NONE, nullptr }; }
+		static Action Pop() { return{ Type::POP, nullptr }; }
+		static Action Push(std::unique_ptr<State>&& state) { return{ Type::PUSH, std::move(state) }; }
+		static Action Replace(std::unique_ptr<State>&& state) { return{ Type::REPLACE, std::move(state) }; }
+	};
+
 	virtual ~State() = default;
 
-	virtual void onAfterPush(EntitySet& entities) = 0;
-	virtual StackOp update(EntitySet& entities) = 0;
-	virtual void onBeforePop(EntitySet& entities) = 0;
+	virtual void onAfterPush(EntitySet& entitys) = 0;
+	virtual Action update(EntitySet& entitys) = 0;
+	virtual void onBeforePop(EntitySet& entitys) = 0;
 };
 
-class TestState : public State
+
+/*
+* WaitState
+*/
+
+class WaitState : public State
 {
 public:
-	TestState(int32 arg) { m_time = arg; }
-	TestState(const TOMLValue& param) { m_time = param.get<int32>(); }
-	void onAfterPush(EntitySet&) override { Print << U"push: " << m_time; }
-	StackOp update(EntitySet&) override { return --m_time < 0 ? StackOp::Replace(std::make_unique<TestState>(120)) : StackOp::None(); }
-	void onBeforePop(EntitySet&) override { Print << U"pop"; }
+	WaitState(const TOMLValue& param);
+
+	void onAfterPush(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
+	void onBeforePop(EntitySet& entities) override;
 
 private:
-	int32 m_time;
+	double m_time;
 };
 
-// scenario.tomlを読み込んで他Stateをpush
+WaitState::WaitState(const TOMLValue& param)
+	: m_time{ param.get<double>() }
+{
+}
+
+void WaitState::onAfterPush(EntitySet&)
+{
+}
+
+State::Action WaitState::update(EntitySet&)
+{
+	m_time -= Scene::DeltaTime();
+	return m_time < 0 ? Action::Pop() : Action::None();
+}
+
+void WaitState::onBeforePop(EntitySet&)
+{
+}
+
+
+/*
+* ScenarioState
+*/
+
 class ScenarioState : public State
 {
 public:
-	using MakeStateFunc = std::function<std::unique_ptr<State>(const TOMLValue&)>;
+	using MakeStateFunc
+		= std::function<std::unique_ptr<State>(const TOMLValue&)>;
 
 	ScenarioState(const String& scenarioName);
 	ScenarioState(const TOMLValue& param);
 
 	void onAfterPush(EntitySet& entities) override;
-	StackOp update(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
 	void onBeforePop(EntitySet& entities) override;
 
 private:
 	void makeEntities(EntitySet& entities, const TOMLValue& params);
-	template<typename Type> static MakeStateFunc getMakeStateFunc();
+
+	template<typename Type>
+	MakeStateFunc makeStateFunc()
+	{
+		return [](const TOMLValue& param) {
+			return std::make_unique<Type>(param);
+		};
+	}
 
 	// シナリオ管理
 	TOMLTableArrayIterator m_now;
 	TOMLTableArrayIterator m_end;
 
-	// ここで作ったEntityの名前
+	// ここで作ったEntityの名前（pop時に削除する用）
 	HashSet<String> m_nameSetMadeOnThis;
 };
 
@@ -137,40 +172,41 @@ void ScenarioState::onAfterPush(EntitySet&)
 {
 }
 
-StackOp ScenarioState::update(EntitySet& entities)
+State::Action ScenarioState::update(EntitySet& entities)
 {
 	// 最後まで読んだら pop
-	if (m_now == m_end)
-	{
-		return StackOp::Pop();
-	}
+	if (m_now == m_end) { return Action::Pop(); }
 
-	// 文字列 -> 次のStateを作る関数へ変換
 	static const HashTable<String, MakeStateFunc> MAKE_TABLE = {
-		// ここにpushしたいStateを追加
-		// 例: { U"hoge", MakeStateFunc<HogeState>() },
-		{ U"test", getMakeStateFunc<TestState>(), },
+		{ U"scenario", makeStateFunc<ScenarioState>() },
+		// TODO: 他のStateもここに登録
 	};
 
 	TOMLValue nowToml = *m_now;
 	++m_now;
+
 	if (nowToml[U"make"].isTableArray())
 	{
+		// Entity作成
 		makeEntities(entities, nowToml[U"make"]);
-		return StackOp::None();
-	}
-	if (nowToml[U"push"].isString())
-	{
-		const String stateName = nowToml[U"push"].getString();
-		return StackOp::Push(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
-	}
-	if (nowToml[U"replace"].isString())
-	{
-		const String stateName = nowToml[U"replace"].getString();
-		return StackOp::Replace(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
+		return Action::None();
 	}
 
-	return StackOp::None();
+	if (nowToml[U"push"].isString())
+	{
+		// push
+		const String stateName = nowToml[U"push"].getString();
+		return Action::Push(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
+	}
+
+	if (nowToml[U"replace"].isString())
+	{
+		// replace
+		const String stateName = nowToml[U"replace"].getString();
+		return Action::Replace(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
+	}
+
+	return Action::None();
 }
 
 void ScenarioState::onBeforePop(EntitySet& entities)
@@ -229,53 +265,52 @@ void ScenarioState::makeEntities(EntitySet& entities, const TOMLValue& params)
 	}
 }
 
-template<typename Type>
-ScenarioState::MakeStateFunc ScenarioState::getMakeStateFunc()
-{
-	return [](const TOMLValue& param) {return std::make_unique<Type>(param); };
-}
 
-// Stateの管理
+/*
+* StateStack
+*/
+
 class StateStack
 {
 public:
-	StateStack(EntitySet& entities);
+	StateStack();
 	void update(EntitySet& entities);
 
 private:
 	void pop(EntitySet& entities);
-	void push(EntitySet& entities, std::unique_ptr<State>&& nextState);
+	void push(EntitySet& entitys, std::unique_ptr<State>&& nextState);
 
 	// top以外のデータも見たいのでArrayで実装
 	// 末尾以外のデータを編集しないように気を付ける
 	Array<std::unique_ptr<State>> m_stack;
 };
 
-StateStack::StateStack(EntitySet& entities)
+StateStack::StateStack()
 {
-	push(entities, std::make_unique<ScenarioState>(U"init"));
+	m_stack.push_back(std::make_unique<ScenarioState>(U"init"));
 }
 
 void StateStack::update(EntitySet& entities)
 {
 	if (m_stack.empty()) { return; }
 
+	// Stateの更新して、スタック操作を取得
 	auto [type, nextState] = m_stack.back()->update(entities);
 
 	switch (type)
 	{
-	case StackOp::Type::NONE:
+	case State::Action::Type::NONE:
 		break;
 
-	case StackOp::Type::POP:
+	case State::Action::Type::POP:
 		pop(entities);
 		break;
 
-	case StackOp::Type::PUSH:
+	case State::Action::Type::PUSH:
 		push(entities, std::move(nextState));
 		break;
 
-	case StackOp::Type::REPLACE:
+	case State::Action::Type::REPLACE:
 		while (not m_stack.empty()) { pop(entities); }
 		push(entities, std::move(nextState));
 		break;
@@ -288,77 +323,77 @@ void StateStack::pop(EntitySet& entities)
 	m_stack.pop_back();
 }
 
-void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
+void StateStack::push(EntitySet& entitys, std::unique_ptr<State>&& nextState)
 {
 	m_stack.push_back(std::move(nextState));
-	m_stack.back()->onAfterPush(entities);
+	m_stack.back()->onAfterPush(entitys);
 }
+
 
 /*
-* EntitySet と StateStack を Game でまとめて管理
+* 描画
 */
 
-class Game
+// Enity1つ描画
+void drawEntity(const EntitySet& entities, const String& name)
 {
-public:
-	Game();
-	void update();
-	void draw() const;
+	if (not entities.posTable.count(name)) { return; }
+	const auto& posC = entities.posTable.at(name);
 
-private:
-	EntitySet m_entities;
-	StateStack m_states; // 追加
-};
-
-Game::Game()
-	: m_states{ m_entities }
-{
-}
-
-void Game::update()
-{
-	m_states.update(m_entities);
-}
-
-void Game::draw() const
-{
-	// TODO: z座標でソートして描画
-	for (const auto& name : m_entities.nameSet)
+	// 画像の表示
+	if (entities.imageTable.count(name))
 	{
-		if (not m_entities.posTable.count(name)) { continue; }
-		const auto& posC = m_entities.posTable.at(name);
-
-		// 画像の表示
-		if (m_entities.imageTable.count(name))
+		const auto& imageC = entities.imageTable.at(name);
+		if (not imageC.isHidden)
 		{
-			const auto& imageC = m_entities.imageTable.at(name);
-			if (not imageC.isHidden)
-			{
-				imageC.texture(imageC.imagePos * imageC.imageSize, imageC.imageSize).drawAt(posC.pos.xy());
-			}
-		}
-
-		// テキストの表示
-		if (m_entities.textTable.count(name))
-		{
-			const auto& textC = m_entities.textTable.at(name);
-			textC.font(textC.text).drawAt(posC.pos.xy(), Palette::Black);
+			imageC.texture(imageC.imagePos * imageC.imageSize, imageC.imageSize).drawAt(posC.pos.xy());
 		}
 	}
+
+	// テキストの表示
+	if (entities.textTable.count(name))
+	{
+		const auto& textC = entities.textTable.at(name);
+		textC.font(textC.text).drawAt(posC.pos.xy(), Palette::Black);
+	}
 }
+
+// Entityまとめて描画
+void drawEntities(const EntitySet& entities)
+{
+	Array<std::pair<double, String>> drawList;
+	for (const auto& name : entities.nameSet)
+	{
+		if (entities.posTable.count(name))
+		{
+			const auto& posC = entities.posTable.at(name);
+			drawList.emplace_back(posC.pos.z, name);
+		}
+	}
+	std::sort(drawList.begin(), drawList.end());
+
+	for (const auto& [z, name] : drawList)
+	{
+		drawEntity(entities, name);
+	}
+}
+
+
+/*
+* Main
+*/
 
 void Main()
 {
 	Window::Resize(Size{ 640, 480 });
 	Scene::SetBackground(Color(0xf0));
-	Game game;
+
+	EntitySet entities;
+	StateStack stateStack;
+
 	while (System::Update())
 	{
-		game.update();
-		game.draw();
-		if (KeySpace.down())
-		{
-			ScreenCapture::SaveCurrentFrame(U"screenshot.png");
-		}
+		stateStack.update(entities);
+		drawEntities(entities);
 	}
 }
