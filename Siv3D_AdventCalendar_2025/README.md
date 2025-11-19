@@ -1,10 +1,10 @@
 # Siv3D:シナリオは設定ファイルに
 
 ## はじめに
-ゲームのストーリーはコードに書きたくない。
+ゲームのストーリーはコードに記述したくない。
 できるだけ設定ファイルに書いて、それを読みながら動いてほしい。
 
-下のTOMLは簡単なストーリ上のイベントについて書いたもの。
+下のTOMLは簡単なストーリ上のイベントについて書いた例。
 C++で「イベント(`event`)」だと他の概念と衝突しやすそうなので、以降は「シナリオ(`scenario`)」と呼ぶ
 
 ```toml
@@ -35,9 +35,10 @@ C++で「イベント(`event`)」だと他の概念と衝突しやすそうな�
 設定ファイルからは `entity="player"` のように文字列でゲーム内の物を指定する。
 文字列でどんな物でも指定できる設計にしておきたい。
 
-今回はECS(Entity Component System)のような考え方でやってみる。
+今回はECSのような考え方を採用してみる。
+（ECS：Entity Component System, 実体（Entity）にデータ（Component）を付け外しする設計）
 作るコンポーネントは3種類（座標、画像、テキスト）、
-話を簡単に進めるために名前→コンポーネントのシンプルな `HashTable` で実装した。
+話を簡単に進めるために、名前をキーとするシンプルな `HashTable` で実装した。
 
 ```cpp
 // 座標
@@ -183,8 +184,8 @@ void Main()
   * scenario.tomlというファイルを読みながら他の `State` を呼びだす
 * 別の状態に遷移した後も `ScenarioState` に戻って続きを進めたい
   * -> **`State` をスタックで管理する**
-  * popで一つ前に簡単に戻れる
-  * スタック内の `State` の進行状況は保持されたまま
+  * popで一つ前に容易に戻れる
+  * スタック内の `State` は進行状況を保持したまま
   * `ScenarioState` 以外の箇所でもスタックの方が都合がいいことが多い
 
 ---
@@ -217,9 +218,9 @@ public:
 
 	virtual ~State() = default;
 
-	virtual void onAfterPush(EntitySet& entitys) = 0;
-	virtual Action update(EntitySet& entitys) = 0;
-	virtual void onBeforePop(EntitySet& entitys) = 0;
+	virtual void onAfterPush(EntitySet& entities) = 0;
+	virtual Action update(EntitySet& entities) = 0;
+	virtual void onBeforePop(EntitySet& entities) = 0;
 };
 ```
 
@@ -234,7 +235,7 @@ public:
 
 private:
 	void pop(EntitySet& entities);
-	void push(EntitySet& entitys, std::unique_ptr<State>&& nextState);
+	void push(EntitySet& entities, std::unique_ptr<State>&& nextState);
 
 	// top以外のデータも見たいのでArrayで実装
 	// 末尾以外のデータを編集しないように気を付ける
@@ -282,10 +283,10 @@ void StateStack::pop(EntitySet& entities)
 	m_stack.pop_back();
 }
 
-void StateStack::push(EntitySet& entitys, std::unique_ptr<State>&& nextState)
+void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 {
 	m_stack.push_back(std::move(nextState));
-	m_stack.back()->onAfterPush(entitys);
+	m_stack.back()->onAfterPush(entities);
 }
 ```
 
@@ -296,7 +297,7 @@ void StateStack::push(EntitySet& entitys, std::unique_ptr<State>&& nextState)
 * scenario.tomlを読み込む
 	* 指定した `TableArray` を順に読む
 	* `make` でEntity作成
-	* `push=` `replace=` で他 `State` を作る
+	* `push=` `replace=` で他Stateを作ってスタックに入れる
 
 ```cpp
 class ScenarioState : public State
@@ -359,7 +360,7 @@ State::Action ScenarioState::update(EntitySet& entities)
 		// TODO: 他のStateもここに登録
 	};
 
-	TOMLValue nowToml = *m_now;
+	const auto& nowToml = *m_now;
 	++m_now;
 
 	if (nowToml[U"make"].isTableArray())
@@ -556,37 +557,166 @@ void WaitState::onBeforePop(EntitySet&)
 
 </details>
 
-## よかったこと
-* 誤字修正の度にコンパイルする必要がなくなった
-* `[[init]]` で `replace="scenario"`するだけでテストしたいシナリオに簡単に飛べる
-* コードを汚さずに色んなシナリオを作りやすい
-* 「１つ前に戻る」が `return Action::Pop()` を書くだけなので楽
+<details>
+<summary> SpeakState（Entityの近くにテキストを出す） </summary>
 
-## 課題
-### Component周りの実装がよくない
+```toml
+[[Scenario]]
+    push = "speak"
+    param = {entity="player", text="こんにちは", offset={y=-45}}
+```
 
-今回の例では3種類しかComponentが出てこないので成立していが数十種類になったら破綻する。
-もっと丁寧な実装が必要。
-（EnTTなどのライブラリを調べてみたい）
+```cpp
+class SpeakState : public State
+{
+public:
+	SpeakState(const TOMLValue& param);
 
-### ミスが見つかるのが遅い
+	void onAfterPush(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
+	void onBeforePop(EntitySet& entities) override;
 
-今回の例では `pushh =` のような単純なスペルミスをしたとき、そのシナリオを実際に踏むまで気づけないことが多い。
-ゲーム起動時にバリデーションチェックを走らせる、State系クラスの引数用クラスを作って `TOMLVAlue` を直接は渡さない、などができると良さそう。
+private:
+	const String m_entityName;
+	const String m_text;
+	const Vec2 m_offset;
+};
+```
 
-### 設定ファイルはこれでいいのか
+```cpp
+SpeakState::SpeakState(const TOMLValue& param)
+	: m_entityName{ param[U"entity"].getString() }
+	, m_text{ param[U"text"].getString() }
+	, m_offset{
+		param[U"offset.x"].getOr<double>(0.0),
+		param[U"offset.y"].getOr<double>(0.0)
+	}
+{
+}
 
-ある程度ストーリーが長いゲームだとscenario.tomlの行数が膨大になる。
-ゲーム開発の約半分がこれを書く作業になるかもしれないので、「短く楽に書ける」「探しやすく読みやすい」はとても大事。  
+void SpeakState::onAfterPush(EntitySet& entities)
+{
+	const auto& entityPosC = entities.posTable.at(m_entityName);
 
-* 多用するStateクラスのパラメータは少なくする。
-* 複数ファイルに分けて書けると便利そう
-* tomlはシナリオを書くのに向いていないでは？と思い始めている。
+	const String name = m_entityName + U"_speak";
+	entities.nameSet.insert(name);
+	entities.posTable[name] = {
+		Vec3{
+			entityPosC.pos.x + m_offset.x,
+			entityPosC.pos.y + m_offset.y,
+			1.0
+		}
+	};
+	entities.textTable[name] = {
+		m_text,
+		Font{ 20 },
+	};
+}
 
+State::Action SpeakState::update(EntitySet& entities)
+{
+	if (KeySpace.down())
+	{
+		return Action::Pop(); // 決定キーで終了
+	}
+	return Action::None();
+}
+
+void SpeakState::onBeforePop(EntitySet& entities)
+{
+	entities.erase(m_entityName + U"_speak");
+}
+```
+
+</details>
+
+## この設計のメリット
+
+開発効率を上げる
+
+* 軽微な修正（セリフの誤字など）のために毎回コンパイルし直す必要がなくなった
+* `[[init]]` を書き換えるだけでテストしたい特定のシナリオへ飛べる
+	* ゲームの最初から手順を追う必要がない（毎回タイトル画面を見なくてもいい）
+
+ロジックとデータの分離
+
+* シナリオのようなゲームデータと、ゲームを動かすロジックを分離できる
+* セリフや細かい進行の記述でコードが汚れない
+* 複数人で開発するときライターとプログラマーでの分業がしやすい
+    * ライターはコードを直接書き換える必要はなく、scenario.tomlだけ触ってもらえばいい
+
+状態管理の簡潔化
+
+* ゲームの状態遷移の大半は「１つ前に戻る」
+	* 「ポーズ→ポーズ解除(pop)」「メニュー画面で１つ前の画面へ(pop)」
+	* これを `return Action::Pop()` を書くだけで実現できるので楽
+* waitの後はspeakかwalkかといった次の処理を全て `ScenarioState` で管理できる
+	* `WaitState` は遷移先を気にせずpopだけすればよい
+
+再利用性が上がる
+
+* `WaitState` などの汎用性が高いStateを作り、シナリオでそれを組み合わせる
+* 作ったStateを別シナリオでも使いまわせる
+
+## 記事にするために実装を簡略化した箇所（実際の開発に向けた課題）
+
+命名の明確化
+
+* 課題：
+	* `State` は他機能と衝突する可能性が高い
+* 対策案：
+	* `GameState` 等もう少し具体的な名前をつける
+	* `namespace` を使う
+
+ECS周りの拡張性
+
+* 課題：
+	* 記事ではComponentを3種類に限定しているのでシンプルな設計でも成立している
+	* 10種類あたりからパフォーマンスやメンテナンス性で破綻しはじめる可能性が高まる
+* 対策案：
+	* より本格的なECS設計を行う
+	* EnTTなどの外部ECSライブラリも検討してみる
+
+バリデーションチェックの早期実行
+
+* 課題：
+	* 実際にそのシナリオを実行するまでscenario.tomlの記載ミスに気づけないことが多い
+* 対策案：
+	* 起動時にscenario.tomlを読み込み、必須項目の有無などをチェックする
+	* 事前に `TOMLValue` から各Stateコンストラクタ引数用の構造体を作り、変換時に型チェックなどを行う
+
+動的なチェックとエラー処理
+
+* 課題：
+	* 各 `State` で指定されたEntityや必要なComponentが見つからなかったときの処理が未定義
+* 対策案：
+	* エラーを出すのかスキップするのか、それをparamで決められるようにするのか、など決めて動かす
+	* 開発段階ではログなどを出し何故見つからないのかが追えるようにしておく
+
+設定ファイルの書き方
+
+* 課題：
+	* シナリオが長いゲームでは `scenario.toml` の行数が膨大になる
+	* 短く楽に書け、シナリオが探しやすく読みやすい状態でないと開発が長期化する
+* 対策案：
+	* 多用するStateのパラメータは少なく短く
+	* 複数ファイルに分けられるようにしてみる
+	* 書き方のドキュメント化
+		* Stateごとに必須/オプションのパラメータ、型、説明などを整理する
+	* そもそもTOMLはシナリオ書くのに向いていない？
+		* 毎回 `[[Scenario]]` を書くのが面倒で、他シナリオへのコピペもしづらい
+		* `[[Scenario.make.HogeComponent]]` のような書き方が面倒
+		* Siv3Dが対応している設定ファイルの中では一番マシには思える
+
+## 余談
+「一ノ一」というゲームを開発中です。
+ストアページ：link
+
+今回の記事はこのゲーム制作中の挑戦と反省から作りました。
+よければウィッシュリスト登録お願いします。
 
 ## おわりに
-ゲーム作りはほぼ独学でやっていて他の人の実装を見ることがほぼない。
-これから書く内容が記事にするほどでもないほどありふれているor記事にすべきでないほどずれている可能性もある
+初めて記事作りをしました。
 
-だけど、考えたことを共有することに何か価値があると信じて書いてみました
-
+ゲーム制作で他人のコードを見る機会があまりなく、ほぼ独学でやっているので、
+何かずれたことを書いてしまっていたらご指摘いただけるとありがたいです。

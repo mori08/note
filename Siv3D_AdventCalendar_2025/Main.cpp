@@ -77,9 +77,9 @@ public:
 
 	virtual ~State() = default;
 
-	virtual void onAfterPush(EntitySet& entitys) = 0;
-	virtual Action update(EntitySet& entitys) = 0;
-	virtual void onBeforePop(EntitySet& entitys) = 0;
+	virtual void onAfterPush(EntitySet& entities) = 0;
+	virtual Action update(EntitySet& entities) = 0;
+	virtual void onBeforePop(EntitySet& entities) = 0;
 };
 
 
@@ -117,6 +117,69 @@ State::Action WaitState::update(EntitySet&)
 
 void WaitState::onBeforePop(EntitySet&)
 {
+}
+
+
+/*
+* SpeakState
+*/
+
+class SpeakState : public State
+{
+public:
+	SpeakState(const TOMLValue& param);
+
+	void onAfterPush(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
+	void onBeforePop(EntitySet& entities) override;
+
+private:
+	const String m_entityName;
+	const String m_text;
+	const Vec2 m_offset;
+};
+
+SpeakState::SpeakState(const TOMLValue& param)
+	: m_entityName{ param[U"entity"].getString() }
+	, m_text{ param[U"text"].getString() }
+	, m_offset{
+		param[U"offset.x"].getOr<double>(0.0),
+		param[U"offset.y"].getOr<double>(0.0)
+	}
+{
+}
+
+void SpeakState::onAfterPush(EntitySet& entities)
+{
+	const auto& entityPosC = entities.posTable.at(m_entityName);
+
+	const String name = m_entityName + U"_speak";
+	entities.nameSet.insert(name);
+	entities.posTable[name] = {
+		Vec3{
+			entityPosC.pos.x + m_offset.x,
+			entityPosC.pos.y + m_offset.y,
+			1.0
+		}
+	};
+	entities.textTable[name] = {
+		m_text,
+		Font{ 20 },
+	};
+}
+
+State::Action SpeakState::update(EntitySet& entities)
+{
+	if (KeySpace.down())
+	{
+		return Action::Pop(); // 決定キーで終了
+	}
+	return Action::None();
+}
+
+void SpeakState::onBeforePop(EntitySet& entities)
+{
+	entities.erase(m_entityName + U"_speak");
 }
 
 
@@ -178,8 +241,9 @@ State::Action ScenarioState::update(EntitySet& entities)
 	if (m_now == m_end) { return Action::Pop(); }
 
 	static const HashTable<String, MakeStateFunc> MAKE_TABLE = {
+		{ U"wait", makeStateFunc<WaitState>() },
+		{ U"speak", makeStateFunc<SpeakState>() },
 		{ U"scenario", makeStateFunc<ScenarioState>() },
-		// TODO: 他のStateもここに登録
 	};
 
 	TOMLValue nowToml = *m_now;
@@ -278,7 +342,7 @@ public:
 
 private:
 	void pop(EntitySet& entities);
-	void push(EntitySet& entitys, std::unique_ptr<State>&& nextState);
+	void push(EntitySet& entities, std::unique_ptr<State>&& nextState);
 
 	// top以外のデータも見たいのでArrayで実装
 	// 末尾以外のデータを編集しないように気を付ける
@@ -323,10 +387,10 @@ void StateStack::pop(EntitySet& entities)
 	m_stack.pop_back();
 }
 
-void StateStack::push(EntitySet& entitys, std::unique_ptr<State>&& nextState)
+void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 {
 	m_stack.push_back(std::move(nextState));
-	m_stack.back()->onAfterPush(entitys);
+	m_stack.back()->onAfterPush(entities);
 }
 
 
