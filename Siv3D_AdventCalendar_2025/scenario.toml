@@ -1,9 +1,99 @@
+
 [[init]]
-    [[init.make]]
+    replace = "scenario"
+    param = "Room1"
+
+
+[[Room1]]
+    [[Room1.make]]
+        name = "background"
+        pos = {x=320, y=240, z=-1}
+        image = {path="back1.png", size={x=640, y=480}, pos={x=0, y=0}}
+    [[Room1.make]]
         name = "player"
-        pos = {x=100, y=100, z=0}
-        image = {path="siv3Dkun.png", size={x=80,y=80}, pos={x=0, y=0}}
-    [[init.make]]
-        name = "text"
-        pos = {x=100, y=140, z=1}
-        text = {text="テスト", font={size=20}}
+        pos = {x=100, y=340, z=0}
+        image = {path="siv3Dkun.png", size={x=80, y=80}, pos={x=0, y=0}}
+    [[Room1.make]]
+        name = "npc"
+        pos = {x=360, y=340, z=0}
+        image = {path="npc.png", size={x=80, y=80}, pos={x=1, y=0}}
+    [[Room1.make]]
+        name = "door"
+        pos = {x=550, y=304, z=-0.9}
+        image = {path="door.png", size={x=64, y=96}, pos={x=0, y=0}}
+[[Room1]]
+    push = "adventure"
+    param = {entity="player", link={npc="Talk", door="Door"}}
+
+
+[[Talk]]
+    push = "speak"
+    param = {entity="player", text="こんにちは", offset={y=-60}}
+[[Talk]]
+    push = "wait"
+    param = 0.5
+[[Talk]]
+    push = "speak"
+    param = {entity="npc", text="...", offset={y=-60}}
+[[Talk]]
+    push = "walk"
+    param = {entity="npc", to=450, speed=40}
+[[Talk]]
+    push = "anim"
+    param = {entity="npc", imagePos={x=1, y=0}}
+[[Talk]]
+    push = "wait"
+    param = 0.5
+[[Talk]]
+    push = "speak"
+    param = {entity="npc", text="ついてきて", offset={y=-60}}
+[[Talk]]
+    push = "walk"
+    param = {entity="npc", to=550, speed=40}
+[[Talk]]
+    push = "anim"
+    param = {entity="npc", imagePos={x=3, y=0}}
+[[Talk]]
+    push = "wait"
+    param = 1.0
+[[Talk]]
+    push = "anim"
+    param = {entity="npc", imagePos={x=3, y=0}, isHidden=true}
+[[Talk]]
+    push = "walk" # 画面外へ出しておく
+    param = {entity="npc", to=1000, speed=1e10}
+
+
+[[Door]]
+    push = "anim"
+    param = {entity="player", imagePos={x=3, y=0}}
+[[Door]]
+    replace = "scenario"
+    param = "Room2"
+
+
+[[Room2]]
+    push = "wait"
+    param = 0.2
+[[Room2]]
+    [[Room2.make]]
+        name = "background"
+        pos = {x=320, y=240, z=-1}
+        image = {path="back2.png", size={x=640, y=480}, pos={x=0, y=0}}
+    [[Room2.make]]
+        name = "player"
+        pos = {x=550, y=340, z=0}
+        image = {path="siv3Dkun.png", size={x=80, y=80}, pos={x=0, y=0}}
+    [[Room2.make]]
+        name = "npc"
+        pos = {x=96, y=340, z=0}
+        image = {path="npc.png", size={x=80, y=80}, pos={x=0, y=0}}
+[[Room2]]
+    push = "wait"
+    param = 1.0
+[[Room2]]
+    push = "anim"
+    param = {entity="npc", imagePos={x=2, y=0}}
+[[Room2]]
+    push = "adventure"
+    param = {entity="player", link={}}

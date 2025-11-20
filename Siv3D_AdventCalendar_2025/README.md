@@ -1,44 +1,43 @@
 # Siv3D:シナリオは設定ファイルに
 
 ## はじめに
-ゲームのストーリーはコードに記述したくない。
-できるだけ設定ファイルに書いて、それを読みながら動いてほしい。
+Siv3Dで以下のようなゲームを作ってみる。
 
-下のTOMLは簡単なストーリ上のイベントについて書いた例。
-C++で「イベント(`event`)」だと他の概念と衝突しやすそうなので、以降は「シナリオ(`scenario`)」と呼ぶ
+**TODO: 動画を入れる**
+
+---
+
+セリフなどのゲームデータはコードに記述せず、設定ファイルに置きたい。
 
 ```toml
-# 例 NPCに話しかけたときのシナリオ #
-[[Scenario1]]
-    push = "text"
-    param = {entity="player", text="こんにちは"}
-[[Scenario1]]
+[[Scenario]]
+    push = "speak"
+    param = {entity="player", text="こんにちは", offset={y=-60}}
+[[Scenario]]
     push = "wait"
-    param = 1.0
-[[Scenario1]]
-    push = "text"
-    param = {entity="npc", text="こんにちは"}
-[[Scenario1]]
-    push = "text"
-    param = {entity="npc", text="ついてきて"}
-[[Scenario1]]
+    param = 0.5
+[[Scenario]]
+    push = "speak"
+    param = {entity="npc", text="...", offset={y=-60}}
+[[Scenario]]
     push = "walk"
-    param = {entity="npc", direction="right", length=100}
-[[Scenario1]]
-    push = "walk"
-    param = {entity="npc", direction="down", length=100}
+    param = {entity="npc", to=450, speed=40}
+[[Scenario]]
+    push = "anim"
+    param = {entity="npc", imagePos={x=1, y=0}}
 ```
 
-これを動かすためにはどんな設計が必要か、Siv3Dを書きながら考える。
+上のTOMLは簡単なシナリオ（この記事では「ゲーム内で発生するイベントの流れを書いたもの」のような意味で使う）について書いた例。
+これを動かすためにはどんな設計が必要か考える。
 
 ## （１）文字列とゲーム内の物を紐づける
-設定ファイルからは `entity="player"` のように文字列でゲーム内の物を指定する。
-文字列でどんな物でも指定できる設計にしておきたい。
+シナリオでは `entity="player"` のように文字列でゲーム内の物を指定する。
 
-今回はECSのような考え方を採用してみる。
+今回はECSの考え方を採用してみる。
 （ECS：Entity Component System, 実体（Entity）にデータ（Component）を付け外しする設計）
+
 作るコンポーネントは3種類（座標、画像、テキスト）、
-話を簡単に進めるために、名前をキーとするシンプルな `HashTable` で実装した。
+話を簡単に進めるためにEntity名をキーとするシンプルな `HashTable` で実装した。
 
 ```cpp
 // 座標
@@ -175,18 +174,13 @@ void Main()
 </details>
 
 ## （２）ゲームの状態をスタックで持つ
-やりたいことを整理する。
+「プレイヤーが操作して探索」「NPCとの会話」「メニュー画面を操作」などなど、
+ゲームには複数の状態があり、これをStateパターンを使って実装する。
+（Stateパターン：状態に応じて振る舞いを変えるためのデザインパターン）
 
-* ゲームの状態を管理、遷移させながらゲームを進行させる
-  * -> **Stateパターンを使う**
-* 設定ファイルを読んでイベントを進行させる `State` がほしい
-  * -> **`ScenarioState` を作る**
-  * scenario.tomlというファイルを読みながら他の `State` を呼びだす
-* 別の状態に遷移した後も `ScenarioState` に戻って続きを進めたい
-  * -> **`State` をスタックで管理する**
-  * popで一つ前に容易に戻れる
-  * スタック内の `State` は進行状況を保持したまま
-  * `ScenarioState` 以外の箇所でもスタックの方が都合がいいことが多い
+ゲームの状態遷移の大半は「１つ前の状態に戻る」なので、
+（例：「探索中に会話が発生→終了したら探索に戻る」「メニュー画面で前のページに戻る」）
+Stateをスタックで管理し、pushを新しい状態への遷移/popを前の状態に戻る操作とする。
 
 ---
 
@@ -246,8 +240,7 @@ private:
 ```cpp
 StateStack::StateStack()
 {
-	// TODO: 初期Stateをpush
-	// m_stack.push_back(std::make_unique<ScenarioState>(U"init"));
+	// TODO: 初期Stateを登録
 }
 
 void StateStack::update(EntitySet& entities)
@@ -290,14 +283,30 @@ void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 }
 ```
 
-設定ファイル(scenario.toml)を読む `ScenarioState` を作って以下の機能を持たせる。
+## （３）シナリオを処理する
+`ScenarioState` を作り、シナリオのファイル（scenario.toml）を読ませてEntityやStateの作成を行う。
+他状態への遷移は基本的にpushで行うので、popでScenarioStateに戻ればシナリオが再開する。
 
-* Entityを作ることができる
-	* pop時には作成したEntityを削除する
-* scenario.tomlを読み込む
-	* 指定した `TableArray` を順に読む
-	* `make` でEntity作成
-	* `push=` `replace=` で他Stateを作ってスタックに入れる
+```toml
+[[Scenario]]
+	[[Scenario.make]] # entityの追加
+		name = "player"
+		pos = {x=100, y=100, z=0}
+		image = {path="siv3Dkun.png", size={x=80,y=80}, pos={x=0, y=0}}
+	[[Scenario.make]]
+		name = "text"
+		pos = {x=100, y=140, z=1}
+		text = {text="テスト", font={size=20}}
+[[Scenario]]
+	push = "hoge" # state名、(4)で追加予定
+	param = {}
+[[Scenario]]
+	replace = "scenario" # 他シナリオへの移る
+	param = "Another"
+
+[[Another]]
+	# ...
+```
 
 ```cpp
 class ScenarioState : public State
@@ -444,29 +453,7 @@ void ScenarioState::makeEntities(EntitySet& entities, const TOMLValue& params)
 }
 ```
 
-<details>
-<summary> scenario.tomlを読み込んで、Entityを作るところまでやってみる </summary>
-
-Main関数にStackSetを追加
-
-```cpp
-void Main()
-{
-	Window::Resize(Size{ 640, 480 });
-	Scene::SetBackground(Color(0xf0));
-
-	EntitySet entities;
-	StateStack stateStack; // 追加
-
-	while (System::Update())
-	{
-		stateStack.update(entities); // 追加
-		drawEntities(entities);
-	}
-}
-```
-
-StateStackの初期Stateを設定して、`[[init]]` を読ませる。
+`StateStack` の初期状態に `ScenarioState` を設定しておく。
 
 ```cpp
 StateStack::StateStack()
@@ -475,38 +462,7 @@ StateStack::StateStack()
 }
 ```
 
-一瞬でpopされないように、ちょっと書き換える
-
-```cpp
-State::Action ScenarioState::update(EntitySet& entities)
-{
-	// 最後まで読んだら pop
-	// if (m_now == m_end) { return Action::Pop(); } // <-- 一時的にコメントアウト
-	if (m_now == m_end) { return Action::None(); } // <-- 最後まで読んだらストップ 
-
-	// 略
-}
-```
-
-scenario.tomlを準備
-
-```toml
-[[init]]
-    [[init.make]]
-        name = "player"
-        pos = {x=100, y=100, z=0}
-        image = {path="siv3Dkun.png", size={x=80,y=80}, pos={x=0, y=0}}
-    [[init.make]]
-        name = "text"
-        pos = {x=100, y=140, z=1}
-        text = {text="テスト", font={size=20}}
-```
-
-同じように画像とテキストを表示できる
-![Image1](image1.png)
-
-</details>
-
+## （４）ゲームとして動かす
 
 他のStateも作る
 
@@ -598,6 +554,7 @@ void SpeakState::onAfterPush(EntitySet& entities)
 {
 	const auto& entityPosC = entities.posTable.at(m_entityName);
 
+	// テキストを表示するEntityを追加
 	const String name = m_entityName + U"_speak";
 	entities.nameSet.insert(name);
 	entities.posTable[name] = {
@@ -624,43 +581,380 @@ State::Action SpeakState::update(EntitySet& entities)
 
 void SpeakState::onBeforePop(EntitySet& entities)
 {
+	// 追加したEntityを片付ける
 	entities.erase(m_entityName + U"_speak");
 }
 ```
 
 </details>
 
+<details>
+<summary> WalkState（Entityを横方向に移動・画像の変更） </summary>
+
+```toml
+[[Scenario]]
+    push = "walk"
+    param = {entity="player", to=400, speed=100}
+```
+
+```cpp
+class WalkState : public State
+{
+public:
+	WalkState(const TOMLValue& param);
+
+	void onAfterPush(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
+	void onBeforePop(EntitySet& entities) override;
+
+private:
+	const String m_entityName;
+	double m_from;
+	const double m_to;
+	const double m_speed;
+	Timer m_timer;
+};
+```
+
+```cpp
+WalkState::WalkState(const TOMLValue& param)
+	: m_entityName{ param[U"entity"].getString() }
+	, m_to{ param[U"to"].get<double>() }
+	, m_from{ 0.0 }
+	, m_speed{ param[U"speed"].get<double>() }
+{
+}
+
+void WalkState::onAfterPush(EntitySet& entities)
+{
+	const auto& posC = entities.posTable.at(m_entityName);
+	m_from = posC.pos.x;
+	m_timer = Timer{
+		SecondsF(Abs(m_to - m_from) / m_speed),
+		StartImmediately::Yes
+	};
+
+	auto& imageC = entities.imageTable.at(m_entityName);
+	if (m_to < m_from)
+	{
+		imageC.imagePos.x = 1; // 左向き
+	}
+	else if (m_from < m_to)
+	{
+		imageC.imagePos.x = 2; // 右向き
+	}
+}
+
+State::Action WalkState::update(EntitySet& entities)
+{
+	auto& posC = entities.posTable.at(m_entityName);
+	const double t = m_timer.progress0_1();
+	posC.pos.x = (1 - t) * m_from + t * m_to;
+
+	return m_timer.isRunning() ? Action::None() : Action::Pop();
+}
+
+void WalkState::onBeforePop(EntitySet&)
+{
+}
+```
+
+</details>
+
+<details>
+<summary> AnimState（画像変更） </summary>
+
+```toml
+[[Scenario]]
+	push = "anim"
+	param = {entity="player", imagePos={x=3, y=0}}
+```
+
+```cpp
+class AnimState : public State
+{
+public:
+	AnimState(const TOMLValue& param);
+
+	void onAfterPush(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
+	void onBeforePop(EntitySet& entities) override;
+
+private:
+	const String m_entityName;
+	const Point m_imagePos;
+	const bool m_isHidden;
+};
+```
+
+```cpp
+AnimState::AnimState(const TOMLValue& param)
+	: m_entityName{ param[U"entity"].getString() }
+	, m_imagePos{
+		param[U"imagePos.x"].get<int32>(),
+		param[U"imagePos.y"].get<int32>()
+	}
+	, m_isHidden{ param[U"isHidden"].getOr<bool>(false) }
+{
+}
+
+void AnimState::onAfterPush(EntitySet& entities)
+{
+	auto& imageC = entities.imageTable.at(m_entityName);
+	imageC.imagePos = m_imagePos;
+	imageC.isHidden = m_isHidden;
+}
+
+State::Action AnimState::update(EntitySet&)
+{
+	return Action::Pop();
+}
+
+void AnimState::onBeforePop(EntitySet&)
+{
+}
+```
+
+</details>
+
+<details>
+<summary> AdventureState（探索、プレイヤーを操作する） </summary>
+
+```toml
+[[Scenario]]
+    push = "adventure"
+    param = {entity="player", link={npc="Talk", door="Room"}}
+```
+
+```cpp
+class AdventureState : public State
+{
+public:
+	AdventureState(const TOMLValue& param);
+
+	void onAfterPush(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
+	void onBeforePop(EntitySet& entities) override;
+
+private:
+	const String m_entityName; // 操作するEntity名
+	HashTable<String, String> m_link; // Entity名とシナリオ名を紐づける
+
+};
+```
+
+```cpp
+AdventureState::AdventureState(const TOMLValue& param)
+	: m_entityName(param[U"entity"].getString())
+{
+	// LinkComponentのようなものをEntityに持たせる方が付け外しが容易
+	// 今回はStateに持たせて楽に済ませる
+	param[U"link"].tableView();
+	for (const auto& [name, value] : param[U"link"].tableView())
+	{
+		m_link[name] = value.getString();
+	}
+}
+
+void AdventureState::onAfterPush(EntitySet&)
+{
+}
+
+State::Action AdventureState::update(EntitySet& entities)
+{
+	auto& posC = entities.posTable.at(m_entityName);
+	auto& imageC = entities.imageTable.at(m_entityName);
+	if (KeyLeft.pressed())
+	{
+		posC.pos.x -= 100.0 * Scene::DeltaTime();
+		imageC.imagePos.x = 1;
+	}
+	else if (KeyRight.pressed())
+	{
+		posC.pos.x += 100.0 * Scene::DeltaTime();
+		imageC.imagePos.x = 2;
+	}
+	posC.pos.x = Clamp(posC.pos.x, 0.0, 640.0);
+
+
+	for (const auto& [targetName, scenarioName] : m_link)
+	{
+		const auto& targetPosC = entities.posTable.at(targetName);
+		if (Abs(posC.pos.x - targetPosC.pos.x) < 60.0 && KeySpace.down())
+		{
+			return Action::Push(
+				std::make_unique<ScenarioState>(scenarioName)
+			);
+		}
+	}
+
+	return Action::None();
+}
+
+void AdventureState::onBeforePop(EntitySet&)
+{
+}
+```
+
+</details>
+
+作ったStateを `ScenarioState` に登録する。
+
+```cpp
+State::Action ScenarioState::update(EntitySet& entities)
+{
+	// 略
+
+	static const HashTable<String, MakeStateFunc> MAKE_TABLE = {
+		{ U"wait", makeStateFunc<WaitState>() },
+		{ U"speak", makeStateFunc<SpeakState>() },
+		{ U"walk", makeStateFunc<WalkState>() },
+		{ U"anim", makeStateFunc<AnimState>() },
+		{ U"adventure", makeStateFunc<AdventureState>() },
+		{ U"scenario", makeStateFunc<ScenarioState>() },
+	};
+
+	// 略
+}
+```
+
+scenario.tomlを書く。
+
+```toml
+[[init]]
+    replace = "scenario"
+    param = "Room1"
+
+
+[[Room1]]
+    [[Room1.make]]
+        name = "background"
+        pos = {x=320, y=240, z=-1}
+        image = {path="back1.png", size={x=640, y=480}, pos={x=0, y=0}}
+    [[Room1.make]]
+        name = "player"
+        pos = {x=100, y=340, z=0}
+        image = {path="siv3Dkun.png", size={x=80, y=80}, pos={x=0, y=0}}
+    [[Room1.make]]
+        name = "npc"
+        pos = {x=360, y=340, z=0}
+        image = {path="npc.png", size={x=80, y=80}, pos={x=1, y=0}}
+    [[Room1.make]]
+        name = "door"
+        pos = {x=550, y=304, z=-0.9}
+        image = {path="door.png", size={x=64, y=96}, pos={x=0, y=0}}
+[[Room1]]
+    push = "adventure"
+    param = {entity="player", link={npc="Talk", door="Door"}}
+
+
+[[Talk]]
+    push = "speak"
+    param = {entity="player", text="こんにちは", offset={y=-60}}
+[[Talk]]
+    push = "wait"
+    param = 0.5
+[[Talk]]
+    push = "speak"
+    param = {entity="npc", text="...", offset={y=-60}}
+[[Talk]]
+    push = "walk"
+    param = {entity="npc", to=450, speed=40}
+[[Talk]]
+    push = "anim"
+    param = {entity="npc", imagePos={x=1, y=0}}
+[[Talk]]
+    push = "wait"
+    param = 0.5
+[[Talk]]
+    push = "speak"
+    param = {entity="npc", text="ついてきて", offset={y=-60}}
+[[Talk]]
+    push = "walk"
+    param = {entity="npc", to=550, speed=40}
+[[Talk]]
+    push = "anim"
+    param = {entity="npc", imagePos={x=3, y=0}}
+[[Talk]]
+    push = "wait"
+    param = 1.0
+[[Talk]]
+    push = "anim"
+    param = {entity="npc", imagePos={x=3, y=0}, isHidden=true}
+[[Talk]]
+    push = "walk" # 画面外へ出しておく
+    param = {entity="npc", to=1000, speed=1e10}
+
+
+[[Door]]
+    push = "anim"
+    param = {entity="player", imagePos={x=3, y=0}}
+[[Door]]
+    replace = "scenario"
+    param = "Room2"
+
+
+[[Room2]]
+    push = "wait"
+    param = 0.2
+[[Room2]]
+    [[Room2.make]]
+        name = "background"
+        pos = {x=320, y=240, z=-1}
+        image = {path="back2.png", size={x=640, y=480}, pos={x=0, y=0}}
+    [[Room2.make]]
+        name = "player"
+        pos = {x=550, y=340, z=0}
+        image = {path="siv3Dkun.png", size={x=80, y=80}, pos={x=0, y=0}}
+    [[Room2.make]]
+        name = "npc"
+        pos = {x=96, y=340, z=0}
+        image = {path="npc.png", size={x=80, y=80}, pos={x=0, y=0}}
+[[Room2]]
+    push = "wait"
+    param = 1.0
+[[Room2]]
+    push = "anim"
+    param = {entity="npc", imagePos={x=2, y=0}}
+[[Room2]]
+    push = "adventure"
+    param = {entity="player", link={}}
+```
+
+**TODO: 記事冒頭の動画を再挿入**
+
 ## この設計のメリット
 
-開発効率を上げる
+**開発やテストが楽になる**
 
-* 軽微な修正（セリフの誤字など）のために毎回コンパイルし直す必要がなくなった
+* 軽微な修正（セリフの誤字など）のために毎回コンパイルする必要がなくなった
 * `[[init]]` を書き換えるだけでテストしたい特定のシナリオへ飛べる
 	* ゲームの最初から手順を追う必要がない（毎回タイトル画面を見なくてもいい）
 
-ロジックとデータの分離
+**ロジックとデータの分離**
 
-* シナリオのようなゲームデータと、ゲームを動かすロジックを分離できる
+* シナリオのようなゲームデータとゲームを動かすロジックを分離できる
 * セリフや細かい進行の記述でコードが汚れない
-* 複数人で開発するときライターとプログラマーでの分業がしやすい
-    * ライターはコードを直接書き換える必要はなく、scenario.tomlだけ触ってもらえばいい
+* 複数人で開発するときシナリオライターとプログラマーでの分業がしやすい
+    * シナリオライターはコードには触らず、scenario.tomlだけを編集する
 
-状態管理の簡潔化
+**状態管理の簡潔化**
 
 * ゲームの状態遷移の大半は「１つ前に戻る」
-	* 「ポーズ→ポーズ解除(pop)」「メニュー画面で１つ前の画面へ(pop)」
 	* これを `return Action::Pop()` を書くだけで実現できるので楽
+	* 前状態の進行状況の保持もスタックに入れておくだけ
 * waitの後はspeakかwalkかといった次の処理を全て `ScenarioState` で管理できる
 	* `WaitState` は遷移先を気にせずpopだけすればよい
 
-再利用性が上がる
+**再利用性が上がる**
 
 * `WaitState` などの汎用性が高いStateを作り、シナリオでそれを組み合わせる
-* 作ったStateを別シナリオでも使いまわせる
+* 作ったState派生クラスは別シナリオでも容易に使いまわせる
 
-## 記事にするために実装を簡略化した箇所（実際の開発に向けた課題）
+## 課題と対策
+記事にするにあたって簡略化した箇所があり、実用にはいくつか課題がある
 
-命名の明確化
+**命名の明確化**
 
 * 課題：
 	* `State` は他機能と衝突する可能性が高い
@@ -668,7 +962,7 @@ void SpeakState::onBeforePop(EntitySet& entities)
 	* `GameState` 等もう少し具体的な名前をつける
 	* `namespace` を使う
 
-ECS周りの拡張性
+**ECS周りの拡張性**
 
 * 課題：
 	* 記事ではComponentを3種類に限定しているのでシンプルな設計でも成立している
@@ -677,23 +971,32 @@ ECS周りの拡張性
 	* より本格的なECS設計を行う
 	* EnTTなどの外部ECSライブラリも検討してみる
 
-バリデーションチェックの早期実行
+**条件による進行の制御**
+
+* 課題:
+    * 現在のシナリオは一方通行
+    * 選択肢やゲーム内のフラグ（所持アイテムなど）に応じてシナリオを分岐させるのが難しい
+* 対策案:
+    * `ScenarioState` にpushせずに別シナリオに遷移するjump機能をつける
+	* jumpに条件をつけ分岐ができるようにする
+
+**バリデーションチェックの早期実行**
 
 * 課題：
 	* 実際にそのシナリオを実行するまでscenario.tomlの記載ミスに気づけないことが多い
 * 対策案：
 	* 起動時にscenario.tomlを読み込み、必須項目の有無などをチェックする
-	* 事前に `TOMLValue` から各Stateコンストラクタ引数用の構造体を作り、変換時に型チェックなどを行う
+	* `TOMLValue` から各Stateコンストラクタ引数用の構造体へ事前に変換し、その際に型チェックなどを行う
 
-動的なチェックとエラー処理
+**動的なチェックとエラー処理**
 
 * 課題：
-	* 各 `State` で指定されたEntityや必要なComponentが見つからなかったときの処理が未定義
+	* 各Stateで指定されたEntityや必要なComponentが見つからなかったときの処理が未定義
 * 対策案：
 	* エラーを出すのかスキップするのか、それをparamで決められるようにするのか、など決めて動かす
-	* 開発段階ではログなどを出し何故見つからないのかが追えるようにしておく
+	* 開発段階ではログなどを出し、何故見つからないのかが追えるようにしておく
 
-設定ファイルの書き方
+**設定ファイルの書き方**
 
 * 課題：
 	* シナリオが長いゲームでは `scenario.toml` の行数が膨大になる
@@ -716,7 +1019,7 @@ ECS周りの拡張性
 よければウィッシュリスト登録お願いします。
 
 ## おわりに
-初めて記事作りをしました。
+初めて記事作りをしました。[(github)](https://github.com/mori08/note/tree/main/Siv3D_AdventCalendar_2025)
 
 ゲーム制作で他人のコードを見る機会があまりなく、ほぼ独学でやっているので、
 何かずれたことを書いてしまっていたらご指摘いただけるとありがたいです。

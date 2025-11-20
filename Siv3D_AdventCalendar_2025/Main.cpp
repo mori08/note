@@ -97,11 +97,11 @@ public:
 	void onBeforePop(EntitySet& entities) override;
 
 private:
-	double m_time;
+	Timer m_timer;
 };
 
 WaitState::WaitState(const TOMLValue& param)
-	: m_time{ param.get<double>() }
+	: m_timer{ SecondsF(param.get<double>()), StartImmediately::Yes }
 {
 }
 
@@ -111,8 +111,7 @@ void WaitState::onAfterPush(EntitySet&)
 
 State::Action WaitState::update(EntitySet&)
 {
-	m_time -= Scene::DeltaTime();
-	return m_time < 0 ? Action::Pop() : Action::None();
+	return m_timer.isRunning() ? Action::None() : Action::Pop();
 }
 
 void WaitState::onBeforePop(EntitySet&)
@@ -184,6 +183,157 @@ void SpeakState::onBeforePop(EntitySet& entities)
 
 
 /*
+* WalkState
+*/
+
+class WalkState : public State
+{
+public:
+	WalkState(const TOMLValue& param);
+
+	void onAfterPush(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
+	void onBeforePop(EntitySet& entities) override;
+
+private:
+	const String m_entityName;
+	double m_from;
+	const double m_to;
+	const double m_speed;
+	Timer m_timer;
+};
+
+WalkState::WalkState(const TOMLValue& param)
+	: m_entityName{ param[U"entity"].getString() }
+	, m_to{ param[U"to"].get<double>() }
+	, m_from{ 0.0 }
+	, m_speed{ param[U"speed"].get<double>() }
+{
+}
+
+void WalkState::onAfterPush(EntitySet& entities)
+{
+	const auto& posC = entities.posTable.at(m_entityName);
+	m_from = posC.pos.x;
+	m_timer = Timer{
+		SecondsF(Abs(m_to - m_from) / m_speed),
+		StartImmediately::Yes
+	};
+
+	auto& imageC = entities.imageTable.at(m_entityName);
+	if (m_to < m_from)
+	{
+		imageC.imagePos.x = 1; // 左向き
+	}
+	else if (m_from < m_to)
+	{
+		imageC.imagePos.x = 2; // 右向き
+	}
+}
+
+State::Action WalkState::update(EntitySet& entities)
+{
+	auto& posC = entities.posTable.at(m_entityName);
+	const double t = m_timer.progress0_1();
+	posC.pos.x = (1 - t) * m_from + t * m_to;
+
+	return m_timer.isRunning() ? Action::None() : Action::Pop();
+}
+
+void WalkState::onBeforePop(EntitySet&)
+{
+}
+
+
+/*
+* AnimState
+*/
+
+class AnimState : public State
+{
+public:
+	AnimState(const TOMLValue& param);
+
+	void onAfterPush(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
+	void onBeforePop(EntitySet& entities) override;
+
+private:
+	const String m_entityName;
+	const Point m_imagePos;
+	const bool m_isHidden;
+};
+
+AnimState::AnimState(const TOMLValue& param)
+	: m_entityName{ param[U"entity"].getString() }
+	, m_imagePos{
+		param[U"imagePos.x"].get<int32>(),
+		param[U"imagePos.y"].get<int32>()
+	}
+	, m_isHidden{ param[U"isHidden"].getOr<bool>(false) }
+{
+}
+
+void AnimState::onAfterPush(EntitySet& entities)
+{
+	auto& imageC = entities.imageTable.at(m_entityName);
+	imageC.imagePos = m_imagePos;
+	imageC.isHidden = m_isHidden;
+}
+
+State::Action AnimState::update(EntitySet&)
+{
+	return Action::Pop();
+}
+
+void AnimState::onBeforePop(EntitySet&)
+{
+}
+
+
+/*
+* AdventureState
+*/
+
+class AdventureState : public State
+{
+public:
+	AdventureState(const TOMLValue& param);
+
+	void onAfterPush(EntitySet& entities) override;
+	Action update(EntitySet& entities) override;
+	void onBeforePop(EntitySet& entities) override;
+
+private:
+	const String m_entityName; // 操作するEntity名
+	HashTable<String, String> m_link; // Entity名とシナリオ名を紐づける
+
+};
+
+AdventureState::AdventureState(const TOMLValue& param)
+	: m_entityName(param[U"entity"].getString())
+{
+	// LinkComponentのようなものをEntityに持たせる方が付け外しが容易
+	// 今回はStateに持たせて楽に済ませる
+	param[U"link"].tableView();
+	for (const auto& [name, value] : param[U"link"].tableView())
+	{
+		m_link[name] = value.getString();
+	}
+}
+
+void AdventureState::onAfterPush(EntitySet&)
+{
+}
+
+// ScenarioStateを参照するので、Adventure::updateは下で実装
+
+void AdventureState::onBeforePop(EntitySet&)
+{
+}
+
+
+/*
 * ScenarioState
 */
 
@@ -243,6 +393,9 @@ State::Action ScenarioState::update(EntitySet& entities)
 	static const HashTable<String, MakeStateFunc> MAKE_TABLE = {
 		{ U"wait", makeStateFunc<WaitState>() },
 		{ U"speak", makeStateFunc<SpeakState>() },
+		{ U"walk", makeStateFunc<WalkState>() },
+		{ U"anim", makeStateFunc<AnimState>() },
+		{ U"adventure", makeStateFunc<AdventureState>() },
 		{ U"scenario", makeStateFunc<ScenarioState>() },
 	};
 
@@ -327,6 +480,38 @@ void ScenarioState::makeEntities(EntitySet& entities, const TOMLValue& params)
 			};
 		}
 	}
+}
+
+// AdventureState::updateの実装
+State::Action AdventureState::update(EntitySet& entities)
+{
+	auto& posC = entities.posTable.at(m_entityName);
+	auto& imageC = entities.imageTable.at(m_entityName);
+	if (KeyLeft.pressed())
+	{
+		posC.pos.x -= 100.0 * Scene::DeltaTime();
+		imageC.imagePos.x = 1;
+	}
+	else if (KeyRight.pressed())
+	{
+		posC.pos.x += 100.0 * Scene::DeltaTime();
+		imageC.imagePos.x = 2;
+	}
+	posC.pos.x = Clamp(posC.pos.x, 0.0, 640.0);
+
+
+	for (const auto& [targetName, scenarioName] : m_link)
+	{
+		const auto& targetPosC = entities.posTable.at(targetName);
+		if (Abs(posC.pos.x - targetPosC.pos.x) < 60.0 && KeySpace.down())
+		{
+			return Action::Push(
+				std::make_unique<ScenarioState>(scenarioName)
+			);
+		}
+	}
+
+	return Action::None();
 }
 
 
@@ -450,7 +635,7 @@ void drawEntities(const EntitySet& entities)
 void Main()
 {
 	Window::Resize(Size{ 640, 480 });
-	Scene::SetBackground(Color(0xf0));
+	Scene::SetBackground(Color{ 0x0f });
 
 	EntitySet entities;
 	StateStack stateStack;
@@ -459,5 +644,7 @@ void Main()
 	{
 		stateStack.update(entities);
 		drawEntities(entities);
+
+		Cursor::RequestStyle(CursorStyle::Hidden);
 	}
 }
