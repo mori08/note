@@ -33,7 +33,7 @@ Siv3Dで以下のようなゲームを作ってみる。
 ## （１）文字列とゲーム内の物を紐づける
 シナリオでは `entity="player"` のように文字列でゲーム内の物を指定する。
 
-今回はECSの考え方を採用してみる。
+ゲーム内の物を一元管理し、その全てに文字列だけでアクセスしたいので、今回はECSの考え方を採用する。
 （ECS：Entity Component System, 実体（Entity）にデータ（Component）を付け外しする設計）
 
 作るコンポーネントは3種類（座標、画像、テキスト）、
@@ -182,6 +182,8 @@ void Main()
 （例：「探索中に会話が発生→終了したら探索に戻る」「メニュー画面で前のページに戻る」）
 Stateをスタックで管理し、pushを新しい状態への遷移/popを前の状態に戻る操作とする。
 
+**TODO: 説明用画像追加**
+
 ---
 
 まずは `State` 抽象クラスを作る。
@@ -198,7 +200,7 @@ public:
 			NONE,
 			POP,
 			PUSH,
-			REPLACE, // clear + push
+			RESET, // clear + push
 		};
 
 		Type type;
@@ -207,7 +209,7 @@ public:
 		static Action None() { return { Type::NONE, nullptr }; }
 		static Action Pop() { return{ Type::POP, nullptr }; }
 		static Action Push(std::unique_ptr<State>&& state) { return{ Type::PUSH, std::move(state) }; }
-		static Action Replace(std::unique_ptr<State>&& state) { return{ Type::REPLACE, std::move(state) }; }
+		static Action Reset(std::unique_ptr<State>&& state) { return{ Type::RESET, std::move(state) }; }
 	};
 
 	virtual ~State() = default;
@@ -263,7 +265,7 @@ void StateStack::update(EntitySet& entities)
 		push(entities, std::move(nextState));
 		break;
 
-	case State::Action::Type::REPLACE:
+	case State::Action::Type::RESET:
 		while (not m_stack.empty()) { pop(entities); }
 		push(entities, std::move(nextState));
 		break;
@@ -284,8 +286,12 @@ void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 ```
 
 ## （３）シナリオを処理する
-`ScenarioState` を作り、シナリオのファイル（scenario.toml）を読ませてEntityやStateの作成を行う。
-他状態への遷移は基本的にpushで行うので、popでScenarioStateに戻ればシナリオが再開する。
+`ScenarioState` クラスを作り、シナリオのファイル（scenario.toml）を読ませてEntityやStateの作成を行う。
+
+`ScenarioState` は他のStateをpushで上に乗せ、シナリオを読む処理を中断する。
+上のStateの処理が終わりpopされれば、`ScenarioState` が最上位に戻りシナリオを読む処理を再開する。
+
+**TODO: 説明用画像追加**
 
 ```toml
 [[Scenario]]
@@ -301,7 +307,7 @@ void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 	push = "hoge" # state名、(4)で追加予定
 	param = {}
 [[Scenario]]
-	replace = "scenario" # 他シナリオへの移る
+	reset = "scenario" # 他シナリオへの移る
 	param = "Another"
 
 [[Another]]
@@ -386,11 +392,11 @@ State::Action ScenarioState::update(EntitySet& entities)
 		return Action::Push(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
 	}
 
-	if (nowToml[U"replace"].isString())
+	if (nowToml[U"reset"].isString())
 	{
-		// replace
-		const String stateName = nowToml[U"replace"].getString();
-		return Action::Replace(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
+		// reset
+		const String stateName = nowToml[U"reset"].getString();
+		return Action::Reset(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
 	}
 
 	return Action::None();
@@ -798,7 +804,7 @@ void AdventureState::onBeforePop(EntitySet&)
 
 </details>
 
-作ったStateを `ScenarioState` に登録する。
+作ったStateを `ScenarioState` に追加する。
 
 ```cpp
 State::Action ScenarioState::update(EntitySet& entities)
@@ -818,11 +824,32 @@ State::Action ScenarioState::update(EntitySet& entities)
 }
 ```
 
+Main文に `EntitySet`, `StateStack` を配置
+
+```cpp
+void Main()
+{
+	Window::Resize(Size{ 640, 480 });
+	Scene::SetBackground(Color{ 0x0f });
+
+	EntitySet entities;
+	StateStack stateStack;
+
+	while (System::Update())
+	{
+		stateStack.update(entities);
+		drawEntities(entities);
+
+		Cursor::RequestStyle(CursorStyle::Hidden);
+	}
+}
+```
+
 scenario.tomlを書く。
 
 ```toml
 [[init]]
-    replace = "scenario"
+    reset = "scenario"
     param = "Room1"
 
 
@@ -890,7 +917,7 @@ scenario.tomlを書く。
     push = "anim"
     param = {entity="player", imagePos={x=3, y=0}}
 [[Door]]
-    replace = "scenario"
+    reset = "scenario"
     param = "Room2"
 
 
@@ -945,6 +972,8 @@ scenario.tomlを書く。
 	* 前状態の進行状況の保持もスタックに入れておくだけ
 * waitの後はspeakかwalkかといった次の処理を全て `ScenarioState` で管理できる
 	* `WaitState` は遷移先を気にせずpopだけすればよい
+* `ScenarioState` の停止・再開を簡単に実装できる
+	* pushしたら停止、上のStateがpopされたら再開
 
 **再利用性が上がる**
 
@@ -1023,3 +1052,6 @@ scenario.tomlを書く。
 
 ゲーム制作で他人のコードを見る機会があまりなく、ほぼ独学でやっているので、
 何かずれたことを書いてしまっていたらご指摘いただけるとありがたいです。
+
+
+
