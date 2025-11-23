@@ -3,7 +3,7 @@
 ## はじめに
 Siv3Dで以下のようなゲームを作ってみる。
 
-**TODO: 動画を入れる**
+（ここに動画を入れる）
 
 ---
 
@@ -180,7 +180,10 @@ void Main()
 
 ゲームの状態遷移の大半は「１つ前の状態に戻る」なので、
 （例：「探索中に会話が発生→終了したら探索に戻る」「メニュー画面で前のページに戻る」）
-Stateをスタックで管理し、pushを新しい状態への遷移/popを前の状態に戻る操作とする。
+Stateをスタックで管理し、一番上を参照する。
+pushは新しい状態への遷移、popは前の状態に戻る遷移となる。
+
+![Image2](image2.png)
 
 ---
 
@@ -198,7 +201,7 @@ public:
 			NONE,
 			POP,
 			PUSH,
-			REPLACE, // clear + push
+			RESET, // clear + push
 		};
 
 		Type type;
@@ -207,7 +210,7 @@ public:
 		static Action None() { return { Type::NONE, nullptr }; }
 		static Action Pop() { return{ Type::POP, nullptr }; }
 		static Action Push(std::unique_ptr<State>&& state) { return{ Type::PUSH, std::move(state) }; }
-		static Action Replace(std::unique_ptr<State>&& state) { return{ Type::REPLACE, std::move(state) }; }
+		static Action Reset(std::unique_ptr<State>&& state) { return{ Type::RESET, std::move(state) }; }
 	};
 
 	virtual ~State() = default;
@@ -263,7 +266,7 @@ void StateStack::update(EntitySet& entities)
 		push(entities, std::move(nextState));
 		break;
 
-	case State::Action::Type::REPLACE:
+	case State::Action::Type::RESET:
 		while (not m_stack.empty()) { pop(entities); }
 		push(entities, std::move(nextState));
 		break;
@@ -287,25 +290,21 @@ void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 `ScenarioState` を作り、シナリオのファイル（scenario.toml）を読ませてEntityやStateの作成を行う。
 他状態への遷移は基本的にpushで行うので、popでScenarioStateに戻ればシナリオが再開する。
 
+![Image3](image3.png)
+
 ```toml
 [[Scenario]]
 	[[Scenario.make]] # entityの追加
-		name = "player"
-		pos = {x=100, y=100, z=0}
-		image = {path="siv3Dkun.png", size={x=80,y=80}, pos={x=0, y=0}}
-	[[Scenario.make]]
-		name = "text"
-		pos = {x=100, y=140, z=1}
-		text = {text="テスト", font={size=20}}
-[[Scenario]]
-	push = "hoge" # state名、(4)で追加予定
-	param = {}
-[[Scenario]]
-	replace = "scenario" # 他シナリオへの移る
-	param = "Another"
+		name = "npc"
+        pos = {x=360, y=340, z=0}
+        image = {path="npc.png", size={x=80, y=80}, pos={x=1, y=0}}
 
-[[Another]]
-	# ...
+[[Talk]]
+    push = "speak"
+    param = {entity="npc", text="...", offset={y=-60}}
+[[Talk]]
+    push = "walk"
+    param = {entity="npc", to=450, speed=40}
 ```
 
 ```cpp
@@ -386,11 +385,11 @@ State::Action ScenarioState::update(EntitySet& entities)
 		return Action::Push(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
 	}
 
-	if (nowToml[U"replace"].isString())
+	if (nowToml[U"reset"].isString())
 	{
-		// replace
-		const String stateName = nowToml[U"replace"].getString();
-		return Action::Replace(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
+		// reset
+		const String stateName = nowToml[U"reset"].getString();
+		return Action::Reset(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
 	}
 
 	return Action::None();
@@ -822,7 +821,7 @@ scenario.tomlを書く。
 
 ```toml
 [[init]]
-    replace = "scenario"
+    reset = "scenario"
     param = "Room1"
 
 
@@ -890,7 +889,7 @@ scenario.tomlを書く。
     push = "anim"
     param = {entity="player", imagePos={x=3, y=0}}
 [[Door]]
-    replace = "scenario"
+    reset = "scenario"
     param = "Room2"
 
 
@@ -921,7 +920,8 @@ scenario.tomlを書く。
     param = {entity="player", link={}}
 ```
 
-**TODO: 記事冒頭の動画を再挿入**
+実際にシナリオを読ませながら動かす
+（ここに動画を入れる）
 
 ## この設計のメリット
 
@@ -943,8 +943,9 @@ scenario.tomlを書く。
 * ゲームの状態遷移の大半は「１つ前に戻る」
 	* これを `return Action::Pop()` を書くだけで実現できるので楽
 	* 前状態の進行状況の保持もスタックに入れておくだけ
-* waitの後はspeakかwalkかといった次の処理を全て `ScenarioState` で管理できる
-	* `WaitState` は遷移先を気にせずpopだけすればよい
+* シナリオで次に遷移するべき先を `ScenarioState` が管理してくれる
+	* `WaitState` は次にどの状態に遷移すべきかは考えず、ただpopすればよい
+	* popした後 `ScenarioState` が次に進むべきStateをpushする
 
 **再利用性が上がる**
 

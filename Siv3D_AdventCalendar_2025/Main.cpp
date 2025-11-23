@@ -63,7 +63,7 @@ public:
 			NONE,
 			POP,
 			PUSH,
-			REPLACE, // clear + push
+			RESET, // clear + push
 		};
 
 		Type type;
@@ -72,7 +72,7 @@ public:
 		static Action None() { return { Type::NONE, nullptr }; }
 		static Action Pop() { return{ Type::POP, nullptr }; }
 		static Action Push(std::unique_ptr<State>&& state) { return{ Type::PUSH, std::move(state) }; }
-		static Action Replace(std::unique_ptr<State>&& state) { return{ Type::REPLACE, std::move(state) }; }
+		static Action Reset(std::unique_ptr<State>&& state) { return{ Type::RESET, std::move(state) }; }
 	};
 
 	virtual ~State() = default;
@@ -80,6 +80,8 @@ public:
 	virtual void onAfterPush(EntitySet& entities) = 0;
 	virtual Action update(EntitySet& entities) = 0;
 	virtual void onBeforePop(EntitySet& entities) = 0;
+
+	virtual String getName() const = 0;
 };
 
 
@@ -95,6 +97,11 @@ public:
 	void onAfterPush(EntitySet& entities) override;
 	Action update(EntitySet& entities) override;
 	void onBeforePop(EntitySet& entities) override;
+
+	String getName() const override
+	{
+		return U"WaitState";
+	}
 
 private:
 	Timer m_timer;
@@ -131,6 +138,11 @@ public:
 	void onAfterPush(EntitySet& entities) override;
 	Action update(EntitySet& entities) override;
 	void onBeforePop(EntitySet& entities) override;
+
+	String getName() const override
+	{
+		return U"SpeakState";
+	}
 
 private:
 	const String m_entityName;
@@ -195,6 +207,11 @@ public:
 	Action update(EntitySet& entities) override;
 	void onBeforePop(EntitySet& entities) override;
 
+	String getName() const override
+	{
+		return U"WalkState";
+	}
+
 private:
 	const String m_entityName;
 	double m_from;
@@ -258,6 +275,11 @@ public:
 	Action update(EntitySet& entities) override;
 	void onBeforePop(EntitySet& entities) override;
 
+	String getName() const override
+	{
+		return U"AnimState";
+	}
+
 private:
 	const String m_entityName;
 	const Point m_imagePos;
@@ -303,6 +325,11 @@ public:
 	void onAfterPush(EntitySet& entities) override;
 	Action update(EntitySet& entities) override;
 	void onBeforePop(EntitySet& entities) override;
+
+	String getName() const override
+	{
+		return U"AdventureState";
+	}
 
 private:
 	const String m_entityName; // 操作するEntity名
@@ -350,6 +377,11 @@ public:
 	Action update(EntitySet& entities) override;
 	void onBeforePop(EntitySet& entities) override;
 
+	String getName() const override
+	{
+		return U"ScenarioState[[" + m_scenarioName + U"]]";
+	}
+
 private:
 	void makeEntities(EntitySet& entities, const TOMLValue& params);
 
@@ -367,9 +399,12 @@ private:
 
 	// ここで作ったEntityの名前（pop時に削除する用）
 	HashSet<String> m_nameSetMadeOnThis;
+
+	const String m_scenarioName = U"";
 };
 
 ScenarioState::ScenarioState(const String& scenarioName)
+	: m_scenarioName{ scenarioName }
 {
 	static const TOMLReader reader{ U"scenario.toml" };
 	m_now = reader[scenarioName].tableArrayView().begin();
@@ -399,7 +434,7 @@ State::Action ScenarioState::update(EntitySet& entities)
 		{ U"scenario", makeStateFunc<ScenarioState>() },
 	};
 
-	TOMLValue nowToml = *m_now;
+	const auto& nowToml = *m_now;
 	++m_now;
 
 	if (nowToml[U"make"].isTableArray())
@@ -416,11 +451,11 @@ State::Action ScenarioState::update(EntitySet& entities)
 		return Action::Push(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
 	}
 
-	if (nowToml[U"replace"].isString())
+	if (nowToml[U"reset"].isString())
 	{
-		// replace
-		const String stateName = nowToml[U"replace"].getString();
-		return Action::Replace(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
+		// reset
+		const String stateName = nowToml[U"reset"].getString();
+		return Action::Reset(MAKE_TABLE.at(stateName)(nowToml[U"param"]));
 	}
 
 	return Action::None();
@@ -537,6 +572,7 @@ private:
 StateStack::StateStack()
 {
 	m_stack.push_back(std::make_unique<ScenarioState>(U"init"));
+	Print << U"ScenarioState[[init]]";
 }
 
 void StateStack::update(EntitySet& entities)
@@ -559,7 +595,7 @@ void StateStack::update(EntitySet& entities)
 		push(entities, std::move(nextState));
 		break;
 
-	case State::Action::Type::REPLACE:
+	case State::Action::Type::RESET:
 		while (not m_stack.empty()) { pop(entities); }
 		push(entities, std::move(nextState));
 		break;
@@ -570,12 +606,25 @@ void StateStack::pop(EntitySet& entities)
 {
 	m_stack.back()->onBeforePop(entities);
 	m_stack.pop_back();
+
+	String debug;
+	for (int32 _=0; _ < m_stack.size(); ++_)
+	{
+		debug += U"| ";
+	}
+	Print << debug << U"\\";
 }
 
 void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 {
+	String debug;
+	for (int32 _=0; _ < m_stack.size(); ++_)
+	{
+		debug += U"| ";
+	}
 	m_stack.push_back(std::move(nextState));
 	m_stack.back()->onAfterPush(entities);
+	Print << debug + m_stack.back()->getName();
 }
 
 

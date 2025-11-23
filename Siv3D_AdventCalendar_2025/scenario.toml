@@ -1,6 +1,6 @@
 
 [[init]]
-    replace = "scenario"
+    reset = "scenario"
     param = "Room1"
 
 
@@ -68,7 +68,7 @@
     push = "anim"
     param = {entity="player", imagePos={x=3, y=0}}
 [[Door]]
-    replace = "scenario"
+    reset = "scenario"
     param = "Room2"
 
 
