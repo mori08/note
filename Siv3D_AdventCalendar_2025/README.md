@@ -1,9 +1,7 @@
-# Siv3D:シナリオは設定ファイルに
-
 ## はじめに
 Siv3Dで以下のようなゲームを作ってみる。
 
-（ここに動画を入れる）
+https://x.com/nanka_mori/status/1991910174991520013
 
 ---
 
@@ -27,13 +25,14 @@ Siv3Dで以下のようなゲームを作ってみる。
     param = {entity="npc", imagePos={x=1, y=0}}
 ```
 
-上のTOMLは簡単なシナリオ（この記事では「ゲーム内で発生するイベントの流れを書いたもの」のような意味で使う）について書いた例。
+この記事ではゲーム内のイベントの流れをまとめたものを「シナリオ」と呼んで話を進める。
+上のTOMLは簡単なシナリオについて書いた例。
 これを動かすためにはどんな設計が必要か考える。
 
 ## （１）文字列とゲーム内の物を紐づける
 シナリオでは `entity="player"` のように文字列でゲーム内の物を指定する。
 
-今回はECSの考え方を採用してみる。
+ゲーム内の物を一元管理し、その全てに文字列だけでアクセスしたいので、今回はECSライクな設計を採用する。
 （ECS：Entity Component System, 実体（Entity）にデータ（Component）を付け外しする設計）
 
 作るコンポーネントは3種類（座標、画像、テキスト）、
@@ -169,12 +168,12 @@ void Main()
 }
 ```
 
-![Image1](image1.png)
+![image1.png](image1.png)
 
 </details>
 
 ## （２）ゲームの状態をスタックで持つ
-「プレイヤーが操作して探索」「NPCとの会話」「メニュー画面を操作」などなど、
+「プレイヤーが操作して探索」「NPCとの会話」「メニュー画面を操作」など、
 ゲームには複数の状態があり、これをStateパターンを使って実装する。
 （Stateパターン：状態に応じて振る舞いを変えるためのデザインパターン）
 
@@ -183,7 +182,7 @@ void Main()
 Stateをスタックで管理し、一番上を参照する。
 pushは新しい状態への遷移、popは前の状態に戻る遷移となる。
 
-![Image2](image2.png)
+![image2.png](image2.png)
 
 ---
 
@@ -290,7 +289,7 @@ void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 `ScenarioState` を作り、シナリオのファイル（scenario.toml）を読ませてEntityやStateの作成を行う。
 他状態への遷移は基本的にpushで行うので、popでScenarioStateに戻ればシナリオが再開する。
 
-![Image3](image3.png)
+![image3.png](image3.png)
 
 ```toml
 [[Scenario]]
@@ -427,6 +426,7 @@ void ScenarioState::makeEntities(EntitySet& entities, const TOMLValue& params)
 		{
 			TOMLValue image = param[U"image"];
 			entities.imageTable[name] = {
+                // 本来はTextureAsset等で管理すべき
 				Texture{ image[U"path"].getString() },
 				Size{
 					image[U"size.x"].get<int32>(),
@@ -471,7 +471,7 @@ StateStack::StateStack()
 ```toml
 [[Scenario]]
 	push = "wait"
-	param = {time=1.0}
+	param = 1.0
 ```
 
 ```cpp
@@ -485,13 +485,13 @@ public:
 	void onBeforePop(EntitySet& entities) override;
 
 private:
-	double m_time;
+	Timer m_timer;
 };
 ```
 
 ```cpp
 WaitState::WaitState(const TOMLValue& param)
-	: m_time{ param.get<double>() }
+	: m_timer{ SecondsF(param.get<double>()), StartImmediately::Yes }
 {
 }
 
@@ -501,15 +501,13 @@ void WaitState::onAfterPush(EntitySet&)
 
 State::Action WaitState::update(EntitySet&)
 {
-	m_time -= Scene::DeltaTime();
-	return m_time < 0 ? Action::Pop() : Action::None();
+	return m_timer.isRunning() ? Action::None() : Action::Pop();
 }
 
 void WaitState::onBeforePop(EntitySet&)
 {
 }
 ```
-
 </details>
 
 <details>
@@ -921,11 +919,13 @@ scenario.tomlを書く。
 ```
 
 実際にシナリオを読ませながら動かす
-（ここに動画を入れる）
+（Stateのpush/pop操作を表示してみる）
+
+https://x.com/nanka_mori/status/1992970165890523461
 
 ## この設計のメリット
 
-**開発やテストが楽になる**
+**開発やテストプレイが楽になる**
 
 * 軽微な修正（セリフの誤字など）のために毎回コンパイルする必要がなくなった
 * `[[init]]` を書き換えるだけでテストしたい特定のシナリオへ飛べる
@@ -967,7 +967,7 @@ scenario.tomlを書く。
 
 * 課題：
 	* 記事ではComponentを3種類に限定しているのでシンプルな設計でも成立している
-	* 10種類あたりからパフォーマンスやメンテナンス性で破綻しはじめる可能性が高まる
+	* 10種類あたりからパフォーマンスやメンテナンス性で破綻しはじめる
 * 対策案：
 	* より本格的なECS設計を行う
 	* EnTTなどの外部ECSライブラリも検討してみる
@@ -978,7 +978,7 @@ scenario.tomlを書く。
     * 現在のシナリオは一方通行
     * 選択肢やゲーム内のフラグ（所持アイテムなど）に応じてシナリオを分岐させるのが難しい
 * 対策案:
-    * `ScenarioState` にpushせずに別シナリオに遷移するjump機能をつける
+    * `ScenarioState` でpushせず、別シナリオに遷移するjump機能をつける
 	* jumpに条件をつけ分岐ができるようにする
 
 **バリデーションチェックの早期実行**
@@ -994,7 +994,7 @@ scenario.tomlを書く。
 * 課題：
 	* 各Stateで指定されたEntityや必要なComponentが見つからなかったときの処理が未定義
 * 対策案：
-	* エラーを出すのかスキップするのか、それをparamで決められるようにするのか、など決めて動かす
+	* エラーを出すorスキップする、それをparamで決められるようにする
 	* 開発段階ではログなどを出し、何故見つからないのかが追えるようにしておく
 
 **設定ファイルの書き方**
@@ -1004,7 +1004,7 @@ scenario.tomlを書く。
 	* 短く楽に書け、シナリオが探しやすく読みやすい状態でないと開発が長期化する
 * 対策案：
 	* 多用するStateのパラメータは少なく短く
-	* 複数ファイルに分けられるようにしてみる
+	* 複数ファイルに分ける
 	* 書き方のドキュメント化
 		* Stateごとに必須/オプションのパラメータ、型、説明などを整理する
 	* そもそもTOMLはシナリオ書くのに向いていない？
@@ -1013,8 +1013,9 @@ scenario.tomlを書く。
 		* Siv3Dが対応している設定ファイルの中では一番マシには思える
 
 ## 余談
-「一ノ一」というゲームを開発中です。
-ストアページ：link
+「一ノ一」というゲームを開発中です。[(ストアページ)](https://store.steampowered.com/app/4022520?utm_source=qiita)
+
+![capsule_header.png](capsule_header.png)
 
 今回の記事はこのゲーム制作中の挑戦と反省から作りました。
 よければウィッシュリスト登録お願いします。

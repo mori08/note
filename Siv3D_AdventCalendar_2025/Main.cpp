@@ -572,7 +572,7 @@ private:
 StateStack::StateStack()
 {
 	m_stack.push_back(std::make_unique<ScenarioState>(U"init"));
-	Print << U"ScenarioState[[init]]";
+	Print << U"┏ScenarioState[[init]]";
 }
 
 void StateStack::update(EntitySet& entities)
@@ -610,9 +610,9 @@ void StateStack::pop(EntitySet& entities)
 	String debug;
 	for (int32 _=0; _ < m_stack.size(); ++_)
 	{
-		debug += U"| ";
+		debug += U"┃";
 	}
-	Print << debug << U"\\";
+	Print << debug << U"┗";
 }
 
 void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
@@ -620,11 +620,11 @@ void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 	String debug;
 	for (int32 _=0; _ < m_stack.size(); ++_)
 	{
-		debug += U"| ";
+		debug += U"┃";
 	}
 	m_stack.push_back(std::move(nextState));
 	m_stack.back()->onAfterPush(entities);
-	Print << debug + m_stack.back()->getName();
+	Print << debug + U"┏" + m_stack.back()->getName();
 }
 
 
