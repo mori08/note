@@ -1,3 +1,5 @@
+# Siv3D: シナリオを設定ファイルに
+
 ## はじめに
 Siv3Dで以下のようなゲームを作ってみる。
 
@@ -6,6 +8,9 @@ https://x.com/nanka_mori/status/1991910174991520013
 ---
 
 セリフなどのゲームデータはコードに記述せず、設定ファイルに置きたい。
+
+この記事ではゲーム内のイベントの流れをまとめたものを「シナリオ」と呼んで話を進める。
+以下のTOMLは簡単なシナリオについて書いた例。
 
 ```toml
 [[Scenario]]
@@ -25,9 +30,24 @@ https://x.com/nanka_mori/status/1991910174991520013
     param = {entity="npc", imagePos={x=1, y=0}}
 ```
 
-この記事ではゲーム内のイベントの流れをまとめたものを「シナリオ」と呼んで話を進める。
-上のTOMLは簡単なシナリオについて書いた例。
 これを動かすためにはどんな設計が必要か考える。
+
+## まとめ
+
+**オブジェクトの管理**
+* 設定ファイルからは文字列でゲーム内の物を指定する
+* 文字列からゲーム内の物を参照できる設計が必要
+* :arrow_right: 「（１）文字列とゲーム内の物を紐づける」
+
+**状態の管理**
+* 「探索」「会話」「歩く」などの状態とその遷移
+* １つ前の状態に戻るのが簡単だと嬉しい
+* :arrow_right: 「（２）ゲームの状態をスタックで持つ」
+
+**シナリオの管理**
+* 設定ファイル(scenario.toml)を読み込む
+* 状態管理と組み合わせてシナリオを進める
+* :arrow_right: 「（３）シナリオを処理する」
 
 ## （１）文字列とゲーム内の物を紐づける
 シナリオでは `entity="player"` のように文字列でゲーム内の物を指定する。
@@ -242,7 +262,7 @@ private:
 ```cpp
 StateStack::StateStack()
 {
-	// TODO: 初期Stateを登録
+	// TODO: （３）で初期Stateを登録
 }
 
 void StateStack::update(EntitySet& entities)
@@ -285,6 +305,22 @@ void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 }
 ```
 
+`EntitySet` と `StateStack` を組み合わせる。
+
+```cpp
+void Main()
+{
+	EntitySet entities;
+	StateStack stateStack;
+
+	while (System::Update())
+	{
+		stateStack.update(entities);
+		drawEntities(entities);
+	}
+}
+```
+
 ## （３）シナリオを処理する
 `ScenarioState` を作り、シナリオのファイル（scenario.toml）を読ませてEntityやStateの作成を行う。
 他状態への遷移は基本的にpushで行うので、popでScenarioStateに戻ればシナリオが再開する。
@@ -292,8 +328,8 @@ void StateStack::push(EntitySet& entities, std::unique_ptr<State>&& nextState)
 ![image3.png](image3.png)
 
 ```toml
-[[Scenario]]
-	[[Scenario.make]] # entityの追加
+[[init]]
+	[[init.make]] # entityの追加
 		name = "npc"
         pos = {x=360, y=340, z=0}
         image = {path="npc.png", size={x=80, y=80}, pos={x=1, y=0}}
@@ -364,7 +400,7 @@ State::Action ScenarioState::update(EntitySet& entities)
 
 	static const HashTable<String, MakeStateFunc> MAKE_TABLE = {
 		{ U"scenario", makeStateFunc<ScenarioState>() },
-		// TODO: 他のStateもここに登録
+		// TODO: （４）で他のStateもここに登録
 	};
 
 	const auto& nowToml = *m_now;
@@ -457,6 +493,7 @@ void ScenarioState::makeEntities(EntitySet& entities, const TOMLValue& params)
 ```cpp
 StateStack::StateStack()
 {
+    // [[init]] から読み始める
 	m_stack.push_back(std::make_unique<ScenarioState>(U"init"));
 }
 ```
@@ -717,10 +754,15 @@ void AnimState::onBeforePop(EntitySet&)
 <details>
 <summary> AdventureState（探索、プレイヤーを操作する） </summary>
 
+決定キーを押したとき、プレイヤーの近くに `link` が設定されたEntityがあると `ScenarioState` をpushする。
+
+つまり何かを調べたときに起こることをシナリオとして管理することができ、
+Entity側は対応するシナリオ名だけ持っていればよい。
+
 ```toml
 [[Scenario]]
     push = "adventure"
-    param = {entity="player", link={npc="Talk", door="Room"}}
+    param = {entity="player", link={npc="Talk", door="Door"}}
 ```
 
 ```cpp
@@ -746,7 +788,6 @@ AdventureState::AdventureState(const TOMLValue& param)
 {
 	// LinkComponentのようなものをEntityに持たせる方が付け外しが容易
 	// 今回はStateに持たせて楽に済ませる
-	param[U"link"].tableView();
 	for (const auto& [name, value] : param[U"link"].tableView())
 	{
 		m_link[name] = value.getString();
@@ -1012,16 +1053,20 @@ https://x.com/nanka_mori/status/1992970165890523461
 		* `[[Scenario.make.HogeComponent]]` のような書き方が面倒
 		* Siv3Dが対応している設定ファイルの中では一番マシには思える
 
-## 余談
-「一ノ一」というゲームを開発中です。[(ストアページ)](https://store.steampowered.com/app/4022520?utm_source=qiita)
-
-![capsule_header.png](capsule_header.png)
-
-今回の記事はこのゲーム制作中の挑戦と反省から作りました。
-よければウィッシュリスト登録お願いします。
-
 ## おわりに
 初めて記事作りをしました。[(github)](https://github.com/mori08/note/tree/main/Siv3D_AdventCalendar_2025)
 
+Siv3Dでは `Object` `Entity` や `Scene` `State` などの管理が強制されていないので
+小さいものを手軽に作れてしまいますが、
+少し大きいものを作るときはそのあたりの設計から考えることができて楽しいです。
+
 ゲーム制作で他人のコードを見る機会があまりなく、ほぼ独学でやっているので、
 何かずれたことを書いてしまっていたらご指摘いただけるとありがたいです。
+
+## 余談
+「一ノ一」というゲームを開発中です。
+
+[![capsule_header.png](capsule_header.png)](https://store.steampowered.com/app/4022520?utm_source=qiita)
+
+今回の記事はこのゲーム制作中の挑戦と反省から作りました。
+よければウィッシュリスト登録お願いします。
