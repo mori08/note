@@ -1,4 +1,4 @@
-# Siv3D: ECSをちゃんとやる
+# Siv3D: ECSを使う
 
 ## はじめに
 
@@ -54,17 +54,23 @@ void HogeSystem::Update(entt::registry& registry) {
 }
 ```
 
-## Entityを描画してみる
+## 去年のデモを作り直す
 
-まずは座標用のコンポーネント。
+EnTTで管理が楽になったので、Componentをどんどん増やしながら再構築する。
+
+https://x.com/nanka_mori/status/1991910174991520013
+
+### 描画
+
+まずは座標Component
 
 ```cpp
 struct Position {
-  Vec3 pos; // {x,y}: 画面上の位置, z: 描画順
+  Vec3 pos; // {x, y}: 画面上の座標、z: 奥行き
 };
 ```
 
-次に描画用コンポーネント。
+次に描画用Component
 画像用とテキスト用の型を `std::variant` を使ってまとめる。
 
 ```cpp
@@ -84,3 +90,130 @@ struct TextDrawable {
 // 描画用コンポーネント
 using Drawable = std::variant<ImageDrawable, TextDrawable>;
 ```
+
+描画用のシステムを作る
+
+```cpp
+namespace DrawSystem {
+
+void DrawOne(const ImageDrawable& d, const Vec2& pos) {
+  d.texture(d.imagePos * d.imageSize, d.imageSize).drawAt(pos);
+}
+
+void DrawOne(const TextDrawable& d, const Vec2& pos) {
+  d.font(d.text).drawAt(pos, Palette::Black);
+}
+
+void Draw(const entt::registry& registry) {
+  Array<std::pair<double, entt::entity>> drawList;
+  for (auto [entity, position, drawable] : registry.view<Position, Drawable>().each()) {
+    drawList.emplace_back(position.pos.z, entity);
+  }
+  std::ranges::sort(drawList.begin(), drawList.end());
+
+  for (const auto& [z, entity] : drawList) {
+    const auto& position = registry.get<Position>(entity);
+    const auto& drawable = registry.get<Drawable>(entity);
+    std::visit([&](const auto& d) { DrawOne(d, position.pos.xy()); }, drawable);
+  }
+}
+
+}
+```
+
+<details>
+<summary> 画像とテキストを描画してみる </summary>
+
+```cpp
+// (略) ComponentやSystemの定義
+
+void Main() {
+  Window::Resize(Size{ 640, 480 });
+  Scene::SetBackground(Color(0xf0));
+
+  entt::registry registry;
+
+  { // Playerを追加
+    const entt::entity entity = registry.create();
+    registry.emplace<Position>(entity, Vec3{100, 100, 0});
+    registry.emplace<Drawable>(entity, ImageDrawable{
+      .texture = Texture{ U"siv3Dkun.png" },
+      .imageSize = Size{ 80, 80 },
+      .imagePos = Point{ 0, 0 },
+    });
+  }
+
+  { // テキストを追加
+    const entt::entity entity = registry.create();
+    registry.emplace<Position>(entity, Vec3{100, 140, 1});
+    registry.emplace<Drawable>(entity, TextDrawable{
+      .font = Font{ 20 },
+      .text = U"テスト"
+    });
+  }
+
+  while (System::Update()) {
+    DrawSystem::Draw(registry);
+  }
+}
+```
+
+</details>
+
+### 名前
+
+外部ファイルからEntityを指定するための名前を管理する必要があり、
+新しく２つの概念を導入して対応する。
+
+Context: registryで管理される共有データ
+
+```cpp
+// struct HogeManager{ Array<entt::entity> list; };
+registry.ctx().emplace<HogeManager>();
+const auto& list = registry.ctx().get<HogeManager>().list;
+```
+
+on_construct/on_destroy: Componentが付け外しされたときに走る処理
+
+```cpp
+registry.on_construct<Hoge>().connect<[](entt::registry&, entt::entity){
+  Print << U"Hogeを付けた";
+}>();
+registry.on_destroy<Hoge>().connect<[](entt::registry&, entt::entity){
+  Print << U"Hogeを外した";
+}>();
+```
+
+これらを使って、
+「Contextで名前->Entityのマップを持ち、Componentの追加/削除で自動で更新していく」
+という状態を作っていく。
+
+まずは型の準備
+
+```cpp
+struct Name {
+  const String value; // 後から変更されるとLookupと不整合を起こすので const
+};
+
+using NameLookup = HashTable<String, entt::entity>;
+```
+
+registryへの登録
+
+```cpp
+registry.ctx().emplace<NameLookup>();
+
+registry.on_construct<Name>().connect<[](entt::registry& registry, entt::entity entity){
+  // 重複チェックは今回スキップ
+  registry.ctx().get<NameLookup>()[registry.get<Name>(entity).value] = entity;
+}>();
+registry.on_destroy<Name>().connect<[](entt::registry& registry, entt::entity entity){
+  registry.ctx().get<NameLookup>().erase(registry.get<Name>(entity).value);
+}>();
+```
+
+TODO: WalkState
+
+### 探索
+
+TODO: AdventureState
