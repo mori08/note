@@ -109,7 +109,7 @@ void Draw(const entt::registry& registry) {
   for (auto [entity, position, drawable] : registry.view<Position, Drawable>().each()) {
     drawList.emplace_back(position.pos.z, entity);
   }
-  std::ranges::sort(drawList.begin(), drawList.end());
+  std::ranges::sort(drawList);
 
   for (const auto& [z, entity] : drawList) {
     const auto& position = registry.get<Position>(entity);
@@ -212,7 +212,86 @@ registry.on_destroy<Name>().connect<[](entt::registry& registry, entt::entity en
 }>();
 ```
 
-TODO: WalkState
+これで、`Name` コンポーネントの追加で自動で `NameLookup` に登録される。
+
+```cpp
+const entt::entity entity = registry.create();
+registry.emplace<Name>(entity, U"player");
+```
+
+<details>
+<summary> `"player"` を指定してEntityを歩かせてみる </summary>
+
+去年作成した `WalkState` を entt で書き直してみる
+
+```toml
+[[Scenario]]
+    push = "walk"
+    param = {entity="player", to=400, speed=100}
+```
+
+```cpp
+class WalkState : public State {
+public:
+  WalkState(const TOMLValue& param);
+
+  void onAfterPush(entt::registry& registry) override;
+  Action update(entt::registry& registry) override;
+  void onBeforePop(entt::registry& registry) override;
+
+private:
+  const String m_name;
+  entt::entity m_entity;
+  const double m_to;
+  const double m_speed;
+};
+```
+
+```cpp
+WalkState::WalkState(const TOMLValue& param)
+  : m_name{ param[U"entity"].getString() }
+  , m_to{ param[U"to"].get<double>() }
+  , m_speed{ param[U"speed"].get<double>() }
+{
+}
+
+void WalkState::onAfterPush(entt::registry& registry) {
+  m_entity = registry.ctx().get<NameLookup>().at(m_name);
+
+  const auto& position = registry.get<Position>(m_entity);
+
+  auto& drawable = registry.get<Drawable>(m_entity);
+  auto& image = std::get<ImageDrawable>(drawable);
+
+  if (m_to < position.pos.x) {
+    image.imagePos.x = 1; // 左向き
+  }
+  else if (m_to > position.pos.x) {
+    image.imagePos.x = 2; // 右向き
+  }
+}
+
+State::Action WalkState::update(entt::registry& registry) {
+  auto& pos = registry.get<Position>(m_entity).pos;
+
+  const int32 direction = Math::Sign(m_to - pos.x);
+  if (direction == 0) {
+    return Action::Pop();
+  }
+
+  pos.x += direction * m_speed * Scene::DeltaTime();
+  if (Math::Sign(m_to - pos.x) != direction) {
+    pos.x = m_to;
+    return Action::Pop();
+  }
+  return Action::None();
+}
+
+void WalkState::onBeforePop(entt::registry&) {
+}
+```
+
+</details>
 
 ### 探索
 
