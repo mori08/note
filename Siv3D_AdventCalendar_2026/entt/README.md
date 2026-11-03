@@ -11,7 +11,7 @@
 
 ## EnTT
 
-去年の記事ではかなり簡単なECSライクな設計を使っていた。
+去年の記事では簡易的なECSライクな設計を使っていた。
 https://qiita.com/mori08/items/8f140932a0b89b74b1e5#１文字列とゲーム内の物を紐づける
 
 今回はもっと本格的にC++のECSライブラリ「EnTT」を使ってみる。
@@ -192,13 +192,17 @@ registry.on_destroy<Hoge>().connect<[](entt::registry&, entt::entity){
 
 ```cpp
 struct Name {
-  const String value; // 後から変更されるとLookupと不整合を起こすので const
+  // 後から変更されるとLookupと不整合を起こすので const
+  const String value;
 };
 
 using NameLookup = HashTable<String, entt::entity>;
 ```
 
-registryへの登録
+`const` を使うとenttで並び替えられないコンポーネントとして扱われ `sort` が使えなくなるが、
+今回は使わないので問題ない。
+
+次はregistryへの登録
 
 ```cpp
 registry.ctx().emplace<NameLookup>();
@@ -219,80 +223,6 @@ const entt::entity entity = registry.create();
 registry.emplace<Name>(entity, U"player");
 ```
 
-<details>
-<summary> `"player"` を指定してEntityを歩かせてみる </summary>
+### State系の処理を書き直す
 
-去年作成した `WalkState` を entt で書き直してみる
-
-```toml
-[[Scenario]]
-    push = "walk"
-    param = {entity="player", to=400, speed=100}
-```
-
-```cpp
-class WalkState : public State {
-public:
-  WalkState(const TOMLValue& param);
-
-  void onAfterPush(entt::registry& registry) override;
-  Action update(entt::registry& registry) override;
-  void onBeforePop(entt::registry& registry) override;
-
-private:
-  const String m_name;
-  entt::entity m_entity;
-  const double m_to;
-  const double m_speed;
-};
-```
-
-```cpp
-WalkState::WalkState(const TOMLValue& param)
-  : m_name{ param[U"entity"].getString() }
-  , m_to{ param[U"to"].get<double>() }
-  , m_speed{ param[U"speed"].get<double>() }
-{
-}
-
-void WalkState::onAfterPush(entt::registry& registry) {
-  m_entity = registry.ctx().get<NameLookup>().at(m_name);
-
-  const auto& position = registry.get<Position>(m_entity);
-
-  auto& drawable = registry.get<Drawable>(m_entity);
-  auto& image = std::get<ImageDrawable>(drawable);
-
-  if (m_to < position.pos.x) {
-    image.imagePos.x = 1; // 左向き
-  }
-  else if (m_to > position.pos.x) {
-    image.imagePos.x = 2; // 右向き
-  }
-}
-
-State::Action WalkState::update(entt::registry& registry) {
-  auto& pos = registry.get<Position>(m_entity).pos;
-
-  const int32 direction = Math::Sign(m_to - pos.x);
-  if (direction == 0) {
-    return Action::Pop();
-  }
-
-  pos.x += direction * m_speed * Scene::DeltaTime();
-  if (Math::Sign(m_to - pos.x) != direction) {
-    pos.x = m_to;
-    return Action::Pop();
-  }
-  return Action::None();
-}
-
-void WalkState::onBeforePop(entt::registry&) {
-}
-```
-
-</details>
-
-### 探索
-
-TODO: AdventureState
+TODO: githubリンク
